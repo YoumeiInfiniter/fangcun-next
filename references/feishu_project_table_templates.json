@@ -1,0 +1,266 @@
+{
+  "version": "2026-07-16",
+  "source": "当前项目已校准后的表1/表2模板沉淀。Fangcun 新项目初始化必须按此 schema 创建/修正飞书多维表。",
+  "project_root": {
+    "wiki_node_token": "NNfBwb32SiOhAwkrhRlcYkojnJg",
+    "url": "https://m9cfu49348.feishu.cn/wiki/NNfBwb32SiOhAwkrhRlcYkojnJg"
+  },
+  "tables": {
+    "product_overview": {
+      "title": "表1:业务产物一览",
+      "reference_template_url": "https://m9cfu49348.feishu.cn/base/NZ8vbVqpbajZqYsZuDjchf5mnvh?table=tblacd7rgShbaNBl&view=vewHS5ZPEB",
+      "strict_fields": [
+        {
+          "name": "字段",
+          "type": 1,
+          "type_name": "Text"
+        },
+        {
+          "name": "内容",
+          "type": 1,
+          "type_name": "Text"
+        },
+        {
+          "name": "内容链接",
+          "type": 15,
+          "type_name": "URL"
+        },
+        {
+          "name": "来源说明",
+          "type": 1,
+          "type_name": "Text"
+        },
+        {
+          "name": "类型",
+          "type": 3,
+          "type_name": "SingleSelect",
+          "options": [
+            "项目信息",
+            "用户输入",
+            "bot输出"
+          ]
+        },
+        {
+          "name": "时间",
+          "type": 5,
+          "type_name": "DateTime",
+          "date_formatter": "yyyy/MM/dd HH:mm"
+        }
+      ],
+      "delete_fields": [
+        "Single option",
+        "Date",
+        "阶段",
+        "Attachment",
+        "Attatchment",
+        "备注"
+      ],
+      "initial_rows": [
+        {
+          "row": 1,
+          "来源说明": "用户手动填写姓名\n",
+          "字段": "编剧",
+          "内容": "请填写编剧姓名",
+          "类型": "项目信息",
+          "时间": "建表时间",
+          "内容链接": "空"
+        },
+        {
+          "row": 2,
+          "来源说明": "bot自动抓取",
+          "字段": "BOT ID",
+          "内容": "当前 bot/account id",
+          "类型": "项目信息",
+          "时间": "建表时间",
+          "内容链接": "空"
+        },
+        {
+          "row": 3,
+          "来源说明": "bot自动抓取",
+          "字段": "chat_id",
+          "内容": "飞书群 chat_id",
+          "类型": "项目信息",
+          "时间": "建表时间",
+          "内容链接": "空"
+        },
+        {
+          "row": 4,
+          "来源说明": "bot自动抓取",
+          "字段": "剧名",
+          "内容": "项目名称",
+          "类型": "项目信息",
+          "时间": "建表时间",
+          "内容链接": "空"
+        },
+        {
+          "row": 5,
+          "来源说明": "bot自动抓取",
+          "字段": "小说/剧本原文",
+          "类型": "用户输入",
+          "内容": "空",
+          "archive_rule": "项目目录和表1/表2完成后，用户发送小说/剧本原文 txt 时，立即创建项目目录下 docx 链接，并在群聊回贴链接；Fangcun 不直接写表1文件链接，表1由 Jingwei 按项目目录扫描后幂等贴入「内容链接」字段。推荐工具：skills/drama/tools/archive_source_txt.py",
+          "内容链接": "收到用户 txt 后填项目目录下原文 docx 链接"
+        },
+        {
+          "row": 6,
+          "来源说明": "bot自动抓取",
+          "字段": "改编指引",
+          "类型": "bot输出",
+          "内容链接": "文件链接",
+          "内容": "空"
+        },
+        {
+          "row": 7,
+          "来源说明": "bot自动抓取",
+          "字段": "改编审核",
+          "类型": "bot输出",
+          "内容链接": "文件链接",
+          "内容": "空"
+        },
+        {
+          "row": 8,
+          "来源说明": "bot自动抓取",
+          "字段": "故事大纲",
+          "类型": "bot输出",
+          "内容链接": "文件链接",
+          "内容": "空"
+        },
+        {
+          "row": 9,
+          "来源说明": "bot自动抓取",
+          "字段": "大纲审核",
+          "类型": "bot输出",
+          "内容链接": "文件链接",
+          "内容": "空"
+        },
+        {
+          "row": 10,
+          "来源说明": "bot自动抓取",
+          "字段": "集纲",
+          "类型": "bot输出",
+          "内容链接": "文件链接",
+          "内容": "空"
+        },
+        {
+          "row": 11,
+          "来源说明": "bot自动抓取",
+          "字段": "集纲审核",
+          "类型": "bot输出",
+          "内容链接": "文件链接",
+          "内容": "空"
+        },
+        {
+          "row": 12,
+          "来源说明": "bot自动抓取",
+          "字段": "剧本汇总",
+          "内容": "空",
+          "内容链接": "文件链接",
+          "类型": "bot输出",
+          "时间": "文件创建时间"
+        }
+      ],
+      "link_field_rule": "表1字段顺序为「字段 / 内容 / 内容链接 / 来源说明 / 类型 / 时间」；内容链接位于内容和来源说明之间，类型为 URL/链接；内容字段写文件名称，内容链接写文件 URL。Fangcun 只负责初始化表结构和创建项目文档，不直接写文件链接；文件链接由 Jingwei 扫描同一项目目录后幂等贴表。固定模板不保留通用「剧本/剧本审核」占位行；剧本分批时在「剧本汇总」行上方自动增加「剧本EPxxx-yyy / 剧本审核EPxxx-yyy」行。"
+    },
+    "token_usage": {
+      "title": "表2：tokens消耗明细表",
+      "reference_template_url": "https://m9cfu49348.feishu.cn/base/OIscbOQJQaf7MasVgsGccyrjndc?table=tblyC8Ee79rJXgCk&view=vewfNlNv1I",
+      "strict_fields": [
+        {
+          "name": "序号",
+          "type": 1,
+          "type_name": "Text",
+          "primary": true
+        },
+        {
+          "name": "usage_date",
+          "type": 5,
+          "type_name": "DateTime",
+          "date_formatter": "yyyy-MM-dd"
+        },
+        {
+          "name": "person",
+          "type": 1,
+          "type_name": "Text"
+        },
+        {
+          "name": "bot_id",
+          "type": 1,
+          "type_name": "Text"
+        },
+        {
+          "name": "chat_id",
+          "type": 1,
+          "type_name": "Text"
+        },
+        {
+          "name": "project",
+          "type": 1,
+          "type_name": "Text"
+        },
+        {
+          "name": "model_provider",
+          "type": 1,
+          "type_name": "Text"
+        },
+        {
+          "name": "model",
+          "type": 1,
+          "type_name": "Text"
+        },
+        {
+          "name": "input_tokens",
+          "type": 2,
+          "type_name": "Number",
+          "formatter": "0"
+        },
+        {
+          "name": "output_tokens",
+          "type": 2,
+          "type_name": "Number",
+          "formatter": "0"
+        },
+        {
+          "name": "total_tokens",
+          "type": 2,
+          "type_name": "Number",
+          "formatter": "0"
+        },
+        {
+          "name": "来源说明",
+          "type": 3,
+          "type_name": "SingleSelect",
+          "options": [
+            "用户触发",
+            "自动触发"
+          ]
+        }
+      ],
+      "delete_fields": [
+        "Single option",
+        "Attachment",
+        "Attatchment",
+        "费用",
+        "费用估算",
+        "成本",
+        "调用时间",
+        "备注",
+        "skill"
+      ],
+      "legacy_rename_map": {
+        "Text": "序号",
+        "Date": "usage_date",
+        "项目名称": "project",
+        "模型": "model",
+        "输入tokens": "input_tokens",
+        "输出tokens": "output_tokens",
+        "总tokens": "total_tokens"
+      },
+      "forbidden_terms": [
+        "费用",
+        "费用估算",
+        "成本",
+        "skill"
+      ]
+    }
+  }
+}

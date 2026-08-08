@@ -1,0 +1,59 @@
+# Python/runtime
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.DS_Store
+
+# Runtime outputs / generated project data
+projects/
+tmp/
+output/
+logs/
+_cache/
+reports/
+*.db
+*.sqlite
+
+# Large media / packaged artifacts
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.wav
+*.mp3
+*.flac
+*.zip
+*.tar.gz
+*.tgz
+*.7z
+*.rar
+
+# Local secrets
+.env
+.env.*
+!.env.example
+*.secret
+openclaw.json
+config.local.json
+*_token*
+*_secret*
+*credential*
+*password*
+*private_key*
+
+# Private source material / local authoring files
+private/
+source_materials/
+*.docx
+*.pdf
+
+# Local editor settings
+.idea/
+.vscode/

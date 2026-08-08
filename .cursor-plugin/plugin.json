@@ -1,0 +1,7 @@
+{
+  "name": "fangcun",
+  "displayName": "fangcun",
+  "description": "小说转短剧剧本改编引擎：事件提取、故事骨架、改编策略、剧本编写",
+  "version": "1.2.0",
+  "skills": "./skills/"
+}
