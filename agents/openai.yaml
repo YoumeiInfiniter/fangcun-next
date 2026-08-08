@@ -1,0 +1,14 @@
+name: fangcun-next-openai
+description: OpenAI 宿主 Agent 适配声明（Host Agent Mode 默认）
+capabilities:
+  can_read_files: true
+  can_write_files: true
+  can_read_feishu_docs: false
+  can_read_comments: false
+  can_send_attachments: true
+  can_call_external_llm: true
+mode: host_agent
+entry: scripts/project_cli.py
+notes: |
+  未配置 API 时使用 Host Agent Mode：Agent 阅读 prompt bundle 后直接写作，
+  通过 save-* 命令落盘；不得声称完成系统模型审核。

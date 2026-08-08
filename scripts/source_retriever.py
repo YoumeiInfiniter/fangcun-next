@@ -273,7 +273,12 @@ def retrieve_source_evidence(
 
     # 3. keyword search when explicit anchors are missing or too thin.
     if len(excerpts) < len(anchor_ids) + len(anchor_chapters) or not excerpts:
-        keywords = _keywords_from(outline, events)
+        keyword_events = list(resolved_events)
+        for eid in anchor_ids:
+            event = events_by_id.get(eid)
+            if event and event not in keyword_events:
+                keyword_events.append(event)
+        keywords = _keywords_from(outline, keyword_events)
         for kw in keywords:
             for ch_id, chapter_text in chapters.items():
                 if ch_id in chapter_ids and excerpts:

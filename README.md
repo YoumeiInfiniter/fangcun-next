@@ -1,64 +1,42 @@
 # Fangcun Next
 
-Fangcun Next 是新版“小说转短剧剧本”Skill 的独立重构仓库。
+Fangcun Next 是新版“小说转短剧剧本”Skill：以编剧为最终作者、AI 为可控创作助手的平台无关系统。本仓库本身就是新版 Skill 的源码与发布源。
 
-> **仓库可见性建议：Private。** 当前迁移基线包含公司飞书资源标识、内部生产流程以及小说/编剧案例材料。仓库未包含真实 API 密钥，但在完成专门的脱敏与版权材料剥离前，不建议设为 Public。
-
-当前仓库处于**设计基线与旧版迁移起点**，不是已经完成的新版本，也不应直接替换生产环境中的 Fangcun。
+> 仓库可见性建议：Private。迁移基线包含公司飞书资源标识、内部生产流程与小说/编剧案例材料；正式发布前使用 `build-package` 生成脱敏发布包，并不要将本仓库设为 Public。
 
 ## 开发入口
 
-无论使用 Codex、Claude Code、Cursor、Gemini CLI、OpenClaw Agent 或其他开发 Agent，首次进入仓库都应按以下顺序阅读：
+首次进入仓库按顺序阅读：
 
 1. [`START_HERE.md`](START_HERE.md)
 2. [`AGENTS.md`](AGENTS.md)
 3. [`docs/specs/fangcun-next-design-spec.md`](docs/specs/fangcun-next-design-spec.md)
 
-完整规格书是新版产品和架构的最高设计基线。旧版代码、旧版说明和调研报告用于理解现状、兼容与迁移，不得覆盖已经确认的新设计决策。
+## 当前状态
 
-## 当前内容
+新版核心已实现（见 `SKILL.md` 与 `scripts/`）：
 
-```text
-fangcun-next/
-├── START_HERE.md                 # 新 Agent 首次接手入口
-├── AGENTS.md                     # 仓库级开发约束
-├── SKILL.md                      # 旧版 Skill 入口，等待按规格书重构
-├── docs/
-│   ├── specs/                    # 新版规范性设计
-│   ├── research/                 # 问题证据与案例调研，按需读取
-│   └── legacy/                   # 旧版说明，兼容和迁移参考
-├── skills/                       # 旧版子 Skill 基线
-├── agents/                       # 旧版 Agent 定义基线
-├── tools/                        # 旧版仓库工具
-└── tests/                        # 旧版测试基线
-```
+- 数据契约：`references/schemas/`（9 份 JSON Schema）；
+- 确定性运行时：原文归档与锚点检索、单集上下文构建、Prompt/Craft 路由、格式校验、连续性、修改请求、时长/容量预估、迁移、发布包；
+- CLI：`python3 -m scripts.project_cli <command>`（或安装后 `fangcun`）；
+- 测试：`tests/unit/`（新版确定性模块）、`tests/regression/`（EP001）、`tests/smoke/`（多题材）。
 
-## 本地开发环境
+旧版代码保留在 `skills/`、`agents/`、`tools/` 与 `docs/legacy/`，作为迁移输入与兼容基线；新版发布包默认排除这些目录。
 
-当前旧版代码至少需要 Python 3.10；基线验证使用 Python 3.12：
+## 常用命令
 
 ```bash
-python3.12 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-PYTHONPATH="$PWD/skills/drama/tools" .venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
+PYTHONPATH="$PWD" .venv/bin/python -m unittest discover -s tests/unit -p 'test_*.py'
+PYTHONPATH="$PWD" .venv/bin/python -m unittest discover -s tests/regression -p 'test_*.py'
+PYTHONPATH="$PWD" .venv/bin/python -m unittest discover -s tests/smoke -p 'test_*.py'
+PYTHONPATH="$PWD" .venv/bin/python -m scripts.project_cli build-package --out dist/fangcun-next-0.1.0.zip
 ```
 
-`.venv/` 和运行缓存已被 Git 忽略。
+完整工作流示例见 `SKILL.md` 的命令路由表。
 
-## 新版首轮重点
+## 安全
 
-- 保留当前反馈较少的改编指引与故事大纲能力；
-- 优先重构“集纲 → 剧本 → 审核 → 定向重写 → 编剧定稿 → 后续连续性”；
-- 修复偏离原文、台词断裂、因果缺失和剧本不落实集纲的问题；
-- 保留内容容量与时长估算，但只作为编剧决策建议；
-- 编剧确认的最新剧本成为已发生剧情的最高事实来源；
-- 创作核心保持 Agent、模型、OpenClaw 和飞书平台无关。
+- 不执行真实飞书写入、不使用公司凭据；
+- `projects/`、`_cache/`、`output/`、`logs/`、密钥、小说原文与内部调研不进发布包；
+- 发布包生成时自动扫描私密内容，命中即拒绝。
 
-## 安全边界
-
-- 默认只在本地测试，不执行真实飞书写入；
-- 不提交小说原文、项目运行产物、API 密钥或公司凭据；
-- 不直接修改或替换生产中的旧 Fangcun；
-- 完成规格书中的 P0 验收后，才进入小规模真实项目测试。
-
-旧版基线目前不是全绿状态。具体结果见 `START_HERE.md` 的“旧版测试基线”，开发 Agent 不得把这些既有失败误报为新版修改引入的回归。
