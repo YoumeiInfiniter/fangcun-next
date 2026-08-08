@@ -52,6 +52,13 @@ EXCLUDED_FILES = {
     "README.md",
     "feishu_project_table_templates.json",
     "feishu_project_table_templates.md",
+    "platform-tools.md",
+    "drama-director.md",
+    "script-writer.md",
+    "event-extractor.md",
+    "skeleton-builder.md",
+    "adaptation-strategist.md",
+    "quality-supervisor.md",
 }
 
 SECRET_PATTERNS = [

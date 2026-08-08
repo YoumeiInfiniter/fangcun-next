@@ -10,9 +10,7 @@ requires-python = ">=3.10"
 dependencies = ["requests>=2.31,<3"]
 
 [project.scripts]
-fangcun = "fangcun_next.project_cli:main"
+fangcun = "scripts.project_cli:main"
 
 [tool.setuptools]
-package-dir = {"" = "scripts"}
-packages = ["fangcun_next"]
-
+packages = ["scripts"]
