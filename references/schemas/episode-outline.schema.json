@@ -1,0 +1,58 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Episode Outline",
+  "type": "object",
+  "required": [
+    "episode",
+    "title",
+    "source_event_ids",
+    "source_chapters",
+    "opening_bridge",
+    "episode_goal",
+    "must_keep",
+    "causal_chains",
+    "knowledge_at_start",
+    "knowledge_at_end",
+    "ending_hook"
+  ],
+  "properties": {
+    "episode": {"type": "integer", "minimum": 1},
+    "title": {"type": "string", "minLength": 1},
+    "source_event_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+    "source_chapters": {"type": "array", "items": {"type": "integer"}, "minItems": 1},
+    "opening_bridge": {"type": "string"},
+    "episode_goal": {"type": "string", "minLength": 1},
+    "must_keep": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+    "causal_chains": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": {"type": "string"},
+        "minItems": 2
+      },
+      "minItems": 1
+    },
+    "knowledge_at_start": {"type": "object"},
+    "knowledge_at_end": {"type": "object"},
+    "dialogue_anchors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "setup": {"type": "string"},
+          "payoff": {"type": "string"},
+          "source": {"type": "string"}
+        }
+      }
+    },
+    "allowed_compression": {"type": "array", "items": {"type": "string"}},
+    "forbidden_additions": {"type": "array", "items": {"type": "string"}},
+    "ending_hook": {"type": "string", "minLength": 1},
+    "suggested_seconds": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
+    "writer_notes": {"type": "array", "items": {"type": "string"}},
+    "episode_function": {"type": "array", "items": {"type": "string"}},
+    "adaptation_basis": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": true
+}
+

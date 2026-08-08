@@ -1,0 +1,31 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Capacity Forecast",
+  "type": "object",
+  "required": ["requested", "forecast", "pressure", "options", "advisory_only"],
+  "properties": {
+    "requested": {
+      "type": "object",
+      "properties": {
+        "episodes": {"type": ["integer", "null"], "minimum": 1},
+        "minimum_episode_seconds": {"type": ["integer", "null"], "minimum": 0},
+        "minimum_total_seconds": {"type": ["integer", "null"], "minimum": 0}
+      }
+    },
+    "forecast": {
+      "type": "object",
+      "properties": {
+        "mainline_minimum_seconds": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+        "full_adaptation_seconds": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+        "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+        "assumptions": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "pressure": {"type": "string", "enum": ["low", "medium", "high"]},
+    "options": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+    "recommended": {"type": "string"},
+    "advisory_only": {"type": "boolean"}
+  },
+  "additionalProperties": true
+}
+

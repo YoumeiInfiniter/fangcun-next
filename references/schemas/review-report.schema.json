@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Review Report",
+  "type": "object",
+  "required": ["episode", "verdict", "summary", "issues"],
+  "properties": {
+    "episode": {"type": "integer", "minimum": 1},
+    "verdict": {"type": "string", "enum": ["pass", "warning", "blocked"]},
+    "summary": {"type": "string", "minLength": 1},
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "severity", "category", "problem"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "severity": {"type": "string", "enum": ["error", "warning", "suggestion"]},
+          "category": {"type": "string", "enum": [
+            "source_fidelity",
+            "outline_adherence",
+            "causality",
+            "character_knowledge",
+            "dialogue_pairing",
+            "character_voice",
+            "previous_episode_bridge",
+            "ending_hook",
+            "continuity",
+            "shootability",
+            "timing",
+            "format"
+          ]},
+          "location": {"type": "string"},
+          "problem": {"type": "string", "minLength": 1},
+          "source_evidence": {"type": "string"},
+          "adaptation_basis": {"type": "string"},
+          "fix": {"type": "string"}
+        }
+      }
+    },
+    "timing_advisory": {
+      "type": "object",
+      "properties": {
+        "estimated_seconds": {"type": ["integer", "null"], "minimum": 0},
+        "preferred_seconds": {"type": ["array", "null"], "items": {"type": "integer"}},
+        "blocking": {"type": "boolean"}
+      }
+    },
+    "writer_decision_required": {"type": "boolean"},
+    "context_hash": {"type": "string"},
+    "reviewer": {"type": "string"}
+  },
+  "additionalProperties": true
+}
+

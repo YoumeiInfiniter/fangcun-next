@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Project Manifest",
+  "type": "object",
+  "required": ["schema_version", "project_id", "created_at", "updated_at", "artifacts"],
+  "properties": {
+    "schema_version": {"type": "integer"},
+    "project_id": {"type": "string"},
+    "created_at": {"type": "string"},
+    "updated_at": {"type": "string"},
+    "artifacts": {"type": "object"}
+  },
+  "additionalProperties": true
+}

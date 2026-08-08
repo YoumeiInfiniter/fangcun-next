@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Continuity State",
+  "type": "object",
+  "required": ["version", "approved_episodes"],
+  "properties": {
+    "version": {"type": "integer", "minimum": 0},
+    "updated_from_episode": {"type": ["integer", "null"], "minimum": 0},
+    "approved_episodes": {"type": "array", "items": {"type": "integer"}},
+    "facts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["fact", "introduced_in", "status"],
+        "properties": {
+          "fact": {"type": "string"},
+          "introduced_in": {"type": "integer", "minimum": 1},
+          "status": {"type": "string", "enum": ["active", "superseded", "resolved"]}
+        }
+      }
+    },
+    "character_knowledge": {"type": "object"},
+    "character_states": {"type": "object"},
+    "relationship_states": {"type": "object"},
+    "open_hooks": {"type": "array", "items": {"type": "object"}},
+    "resolved_hooks": {"type": "array", "items": {"type": "object"}},
+    "props": {"type": "object"},
+    "locations": {"type": "object"},
+    "writer_overrides": {"type": "array", "items": {"type": "object"}},
+    "notes_for_future": {"type": "array", "items": {"type": "string"}},
+    "extraction_mode": {"type": "string", "enum": ["deterministic", "model_assisted"]}
+  },
+  "additionalProperties": true
+}
+

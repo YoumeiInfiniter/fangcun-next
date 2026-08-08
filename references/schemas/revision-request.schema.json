@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Revision Request",
+  "type": "object",
+  "required": ["revision_id", "episode", "source", "instruction", "status"],
+  "properties": {
+    "revision_id": {"type": "string", "minLength": 1},
+    "episode": {"type": "integer", "minimum": 1},
+    "source": {"type": "string", "enum": ["chat", "feishu_comment", "feishu_body", "uploaded_file", "writer_statement", "cli"]},
+    "requested_by": {"type": "string"},
+    "instruction": {"type": "string", "minLength": 1},
+    "scope": {"type": "string", "enum": ["local_episode", "next_episode", "future_episodes", "character_knowledge", "project_wide"]},
+    "affects_future": {"type": "boolean"},
+    "impact_analysis": {"type": "object"},
+    "status": {"type": "string", "enum": ["pending", "approved", "rejected", "applied"]},
+    "created_at": {"type": "string"}
+  },
+  "additionalProperties": true
+}
+
