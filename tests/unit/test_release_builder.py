@@ -42,6 +42,12 @@ class ReleaseBuilderTests(unittest.TestCase):
             self.assertEqual(len(problems), 1)
             self.assertIn("leak.py", problems[0])
 
+    def test_package_excludes_egg_info_directories(self):
+        zip_path = build_package(self.out)
+        with zipfile.ZipFile(zip_path) as zf:
+            names = zf.namelist()
+        self.assertFalse(any(".egg-info" in name for name in names))
+
     def test_build_package_raises_on_secret(self):
         import scripts.release_builder as rb
 

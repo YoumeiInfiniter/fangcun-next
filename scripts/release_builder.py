@@ -82,6 +82,8 @@ def iter_package_files(root: Path) -> list[Path]:
         rel = path.relative_to(root)
         if any(part in EXCLUDED_DIRS for part in rel.parts[:-1]):
             continue
+        if any(part.endswith(".egg-info") for part in rel.parts[:-1]):
+            continue
         if rel.name in EXCLUDED_FILES or rel.name.endswith((".pyc", ".pyo", ".zip")):
             continue
         if any(part.startswith(".") for part in rel.parts):
