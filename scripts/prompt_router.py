@@ -244,6 +244,14 @@ def assemble_prompt_layers(
         if text:
             craft_parts.append(text)
     layers["craft"] = "\n\n".join(craft_parts)
+    layers["review"] = ""
+    if role == "rewriter" and context.get("review_report"):
+        from .common import canonical_json
+
+        layers["review"] = (
+            "## 审核报告（只修复以下明确问题，不得另写一版）\n"
+            + canonical_json(context["review_report"])
+        )
     return layers
 
 
@@ -263,5 +271,16 @@ def render_prompt_bundle(
         f"- 上下文快照文件：{context.get('context_file', '')}\n"
         "\n你必须消费本文件中与快照一致的上下文。只输出产物，不输出审核说明。\n"
     )
-    return "\n\n".join([header, layers["system_base"], layers["stage_role"], layers["project"], layers["contract"], layers["evidence"], layers["continuity"], layers["craft"]])
-
+    return "\n\n".join(
+        [
+            header,
+            layers["system_base"],
+            layers["stage_role"],
+            layers["project"],
+            layers["contract"],
+            layers["evidence"],
+            layers["continuity"],
+            layers["craft"],
+            layers["review"],
+        ]
+    )

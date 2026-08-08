@@ -1,0 +1,54 @@
+[
+  {
+    "event_id": "CH001-E01",
+    "chapter_id": 1,
+    "chapter_title": "系统的声音",
+    "event": "谢淮舟提出录完节目离婚，叶聆穿书成为恶毒原配",
+    "importance": "mainline",
+    "minimum_screen_seconds": 20,
+    "preferred_screen_seconds": 35,
+    "key_quotes": [
+      {"speaker": "谢淮舟", "text": "录完节目，我们离婚。", "must_preserve_pairing": true},
+      {"speaker": "叶聆", "text": "我的三亿呢？", "must_preserve_pairing": true}
+    ]
+  },
+  {
+    "event_id": "CH001-E02",
+    "chapter_id": 1,
+    "chapter_title": "系统的声音",
+    "event": "996 用押韵话术登场，叶聆接话吃不完的苦",
+    "importance": "mainline",
+    "minimum_screen_seconds": 20,
+    "preferred_screen_seconds": 35,
+    "key_quotes": [
+      {"speaker": "996", "text": "吃得苦中苦，你就能得到——", "must_preserve_pairing": true},
+      {"speaker": "叶聆", "text": "吃不完的苦。", "must_preserve_pairing": true}
+    ]
+  },
+  {
+    "event_id": "CH001-E03",
+    "chapter_id": 1,
+    "chapter_title": "系统的声音",
+    "event": "谢淮舟能听见系统并听到只有恋爱脑才能听见，认定叶聆做梦",
+    "importance": "mainline",
+    "minimum_screen_seconds": 15,
+    "preferred_screen_seconds": 25,
+    "key_quotes": [
+      {"speaker": "996", "text": "只有纯正恋爱脑才能听见我。", "must_preserve_pairing": false}
+    ]
+  },
+  {
+    "event_id": "CH001-E04",
+    "chapter_id": 1,
+    "chapter_title": "系统的声音",
+    "event": "谢淮舟发誓不爱叶聆，五秒牵手任务失败，雷击错绑",
+    "importance": "mainline",
+    "minimum_screen_seconds": 25,
+    "preferred_screen_seconds": 40,
+    "key_quotes": [
+      {"speaker": "叶聆", "text": "你有本事就劈死我——", "must_preserve_pairing": true},
+      {"speaker": "996", "text": "绑错惩罚对象了。", "must_preserve_pairing": true}
+    ]
+  }
+]
+

@@ -1,0 +1,36 @@
+{
+  "episode": 1,
+  "title": "系统绑错人",
+  "source_event_ids": ["CH001-E01", "CH001-E02", "CH001-E03", "CH001-E04"],
+  "source_chapters": [1],
+  "opening_bridge": "谢淮舟提出录完恋综后离婚",
+  "episode_goal": "建立叶聆退休穿书、996出现、谢淮舟能听见系统及惩罚错绑规则",
+  "must_keep": [
+    "谢淮舟提出录完节目离婚",
+    "996 押韵话术登场",
+    "谢淮舟能听见系统",
+    "五秒牵手任务失败",
+    "雷击错绑"
+  ],
+  "causal_chains": [
+    ["系统发布任务", "谢淮舟拒绝", "倒计时失败", "叶聆挑衅", "雷击错绑", "三方反应"]
+  ],
+  "knowledge_at_start": {
+    "叶聆": ["刚完成任务准备退休"],
+    "谢淮舟": ["准备与叶聆离婚"]
+  },
+  "knowledge_at_end": {
+    "叶聆": ["系统惩罚错误作用于谢淮舟"],
+    "谢淮舟": ["能听见996并会受任务惩罚"]
+  },
+  "dialogue_anchors": [
+    {"setup": "吃得苦中苦，你就能得到——", "payoff": "吃不完的苦。", "source": "第1章"},
+    {"setup": "你有本事就劈死我——", "payoff": "死我", "source": "第1章"}
+  ],
+  "allowed_compression": ["退休背景可用短闪回表现"],
+  "forbidden_additions": ["无依据的新人物", "改变系统可被听见的规则"],
+  "ending_hook": "996承认绑错惩罚对象",
+  "suggested_seconds": [90, 130],
+  "episode_function": ["opening", "rule-reveal", "hook"]
+}
+
