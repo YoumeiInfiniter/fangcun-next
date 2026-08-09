@@ -43,8 +43,8 @@
       "items": {
         "type": "object",
         "properties": {
-          "setup": {"type": "string"},
-          "payoff": {"type": "string"},
+          "setup": {"type": ["string", "null"]},
+          "payoff": {"type": ["string", "null"]},
           "source": {"type": "string"}
         }
       }

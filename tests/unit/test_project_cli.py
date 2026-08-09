@@ -39,7 +39,7 @@ EVENTS = [
         "chapter_id": 1,
         "event": "系统登场并绑定",
         "importance": "mainline",
-        "source_span": {"start": 0, "end": 40},
+        "source_span": {"start": 0, "end": 30},
         "key_quotes": [{"speaker": "谢淮舟", "text": "什么动静？"}],
     },
     {
@@ -47,7 +47,7 @@ EVENTS = [
         "chapter_id": 1,
         "event": "雷击错绑",
         "importance": "mainline",
-        "source_span": {"start": 40, "end": 130},
+        "source_span": {"start": 30, "end": 80},
         "key_quotes": [{"speaker": "996", "text": "绑错惩罚对象了。"}],
     },
 ]
@@ -60,7 +60,7 @@ OUTLINES = [
         "source_chapters": [1],
         "opening_bridge": "谢淮舟提出离婚",
         "episode_goal": "建立系统规则",
-        "must_keep": ["半空弹出光团", "雷击错绑"],
+        "must_keep": ["谢淮舟提出录完节目离婚", "雷击错绑"],
         "causal_chains": [["系统登场", "雷击错绑"]],
         "knowledge_at_start": {},
         "knowledge_at_end": {"谢淮舟": ["能听见系统"]},

@@ -44,7 +44,7 @@ SPANNED_EVENTS = [
         "chapter_id": 1,
         "event": "雷击错绑",
         "importance": "mainline",
-        "source_span": {"start": 60, "end": 100},
+        "source_span": {"start": 60, "end": 90},
         "key_quotes": [
             {"speaker": "996", "text": "绑错惩罚对象了。", "must_preserve_pairing": True, "pair_id": "P2"}
         ],
@@ -480,6 +480,7 @@ class Round2RewriteSourceTests(Round1BypassBase):
             1,
             "第1集：第1集\n\n1-1 家 夜 内\n人物：叶聆、996\n\n△人工动作。\n叶聆：什么动静？\n996：人工台词。\n",
             context_hash=binding["meta"]["context_hash"],
+            manual_edit=True,
         )
         meta3 = draft_meta_record(self.project_dir, 1, v3)
         self.assertEqual(meta3["origin"], "manual")
@@ -504,18 +505,38 @@ class Round2RewriteSourceTests(Round1BypassBase):
         self._save_review(1, report3)
         _run("rewrite", "--dir", str(self.project_dir), "--episode", "1")
 
-    def test_r2_24_omitting_ticket_is_manual_not_automatic(self):
+    def test_r2_24_omitting_ticket_cannot_pretend_manual(self):
         binding = self._prepare_reviewed_draft()
         _run("rewrite", "--dir", str(self.project_dir), "--episode", "1")
-        # Save WITHOUT consuming the issued ticket → manual origin.
+        # Omitting the ticket must be REJECTED, not silently treated as manual.
+        path = self.root / "draft_no_ticket.txt"
+        path.write_text(
+            "第1集：第1集\n\n1-1 家 夜 内\n人物：叶聆、996\n\n△人工动作。\n叶聆：什么动静？\n996：人工台词。\n",
+            encoding="utf-8",
+        )
+        _run(
+            "save-draft",
+            "--dir", str(self.project_dir),
+            "--episode", "1",
+            "--file", str(path),
+            "--context-hash", binding["meta"]["context_hash"],
+            expect=1,
+        )
+        # Explicit manual-edit flow cancels the ticket and records the audit.
         v2 = self._draft(
             1,
             "第1集：第1集\n\n1-1 家 夜 内\n人物：叶聆、996\n\n△人工动作。\n叶聆：什么动静？\n996：人工台词。\n",
             context_hash=binding["meta"]["context_hash"],
+            manual_edit=True,
         )
         meta = draft_meta_record(self.project_dir, 1, v2)
         self.assertEqual(meta["origin"], "manual")
         self.assertNotIn("rewrite_ticket_id", meta)
+        from scripts.rewrite_ticket import latest_issued_ticket
+
+        self.assertIsNone(latest_issued_ticket(self.project_dir, 1))
+        audit = (self.project_dir / "state" / "manual_edits.jsonl").read_text(encoding="utf-8")
+        self.assertIn("writer manual edit", audit)
 
 
 class Round2LogicalVersionTests(Round1BypassBase):

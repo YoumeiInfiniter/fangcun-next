@@ -168,6 +168,13 @@ def cmd_save_events(args) -> int:
             ensure_valid(event, "source-event.schema.json")
         except SchemaValidationError as exc:
             raise CliError(f"事件 {event.get('event_id', '?')} 未通过 Schema：\n" + "\n".join(exc.messages))
+        span = event.get("source_span")
+        if isinstance(span, dict) and "start" in span and "end" in span:
+            start, end = span.get("start"), span.get("end")
+            if not isinstance(start, int) or not isinstance(end, int) or not (0 <= start < end):
+                raise CliError(
+                    f"事件 {event.get('event_id', '?')} source_span 非法（必须满足 0 <= start < end）：{span}"
+                )
     result = commit_artifact(
         project_dir,
         "source_events",
@@ -440,9 +447,23 @@ def cmd_save_draft(args) -> int:
     ticket_id = getattr(args, "rewrite_ticket", None) or None
     origin = "manual"
     ticket_bindings = {}
-    if ticket_id:
-        from .rewrite_ticket import consume_rewrite_ticket, ticket_state
+    from .rewrite_ticket import (
+        cancel_issued_tickets_for_binding,
+        consume_rewrite_ticket,
+        latest_issued_ticket,
+        ticket_state,
+    )
 
+    manual_edit = bool(getattr(args, "manual_edit", False))
+    if not ticket_id and not manual_edit:
+        issued = latest_issued_ticket(project_dir, args.episode)
+        if issued is not None and issued.get("context_hash") == context_hash:
+            raise CliError(
+                f"该草稿上下文存在未消费的 rewrite ticket（{issued['ticket_id']}）。"
+                "省略 ticket 不能登记为人工稿；请提交 --rewrite-ticket 消费，"
+                "或用 --manual-edit --manual-reason 显式声明人工修改并取消该 ticket。"
+            )
+    if ticket_id:
         ticket = ticket_state(project_dir, ticket_id)
         if not ticket:
             raise CliError(f"rewrite ticket 不存在：{ticket_id}")
@@ -468,6 +489,27 @@ def cmd_save_draft(args) -> int:
             "source_draft_version": ticket.get("source_draft_version"),
             "source_draft_hash": ticket.get("source_draft_hash"),
         }
+    elif manual_edit:
+        cancelled = cancel_issued_tickets_for_binding(
+            project_dir,
+            episode=args.episode,
+            context_hash=context_hash,
+            reason=getattr(args, "manual_reason", "") or "writer manual edit",
+            operator="cli",
+        )
+        from .common import jsonl_append
+
+        jsonl_append(
+            project_dir / "state" / "manual_edits.jsonl",
+            {
+                "episode": args.episode,
+                "context_hash": context_hash,
+                "reason": getattr(args, "manual_reason", "") or "writer manual edit",
+                "operator": "cli",
+                "cancelled_tickets": cancelled,
+                "created_at": now_iso(),
+            },
+        )
     meta = {
         "context_hash": context_hash,
         "draft_hash": draft_hash,
@@ -620,8 +662,18 @@ def _validate_issue_evidence(issue: dict, context: dict) -> list[str]:
                 and span.get("end", -1) <= ex.get("source_span", {}).get("end", -2)
             ):
                 ok = False
-            if quote and quote not in str(ex.get("text", "")):
-                ok = False
+            if quote:
+                ex_text = str(ex.get("text", ""))
+                if isinstance(span, dict):
+                    ex_start = ex.get("source_span", {}).get("start", 0)
+                    slice_start = span.get("start", 0) - ex_start
+                    slice_end = span.get("end", 0) - ex_start
+                    if not (0 <= slice_start < slice_end <= len(ex_text)):
+                        ok = False
+                    elif quote not in ex_text[slice_start:slice_end]:
+                        ok = False
+                elif quote not in ex_text:
+                    ok = False
             if excerpt_hash and excerpt_hash != ex.get("excerpt_hash"):
                 ok = False
             if ok:
@@ -973,6 +1025,21 @@ def _validate_review_for_consumption(project_dir: Path, episode: int, review_dat
     derived = _derive_verdict(review_data.get("issues"))
     if review_data.get("verdict") != derived:
         errors.append(f"verdict {review_data.get('verdict')!r} 与 issues 推导结果 {derived!r} 不一致")
+    issues = review_data.get("issues") or []
+    actionable = [
+        i
+        for i in issues
+        if isinstance(i, dict) and str(i.get("problem", "")).strip() and i.get("severity") in ("error", "warning")
+    ]
+    if review_data.get("verdict") == "pass":
+        if issues:
+            errors.append("pass 报告不应包含 issues")
+        else:
+            errors.append("pass 且无 actionable issue 的审核不得用于重写")
+    if review_data.get("verdict") == "blocked" and not any(i.get("severity") == "error" for i in issues):
+        errors.append("blocked 报告必须包含合法 error")
+    if review_data.get("verdict") == "warning" and not actionable:
+        errors.append("warning 报告必须包含合法 actionable issue")
     return errors
 
 
@@ -1072,21 +1139,29 @@ def cmd_approve(args) -> int:
     text = Path(args.file).expanduser().resolve()
     if not text.exists():
         raise CliError(f"定稿文件不存在：{text}")
-    path = apply_approved_script(project_dir, args.episode, text.read_text(encoding="utf-8"), source=args.source)
+    approve_result = apply_approved_script(
+        project_dir,
+        args.episode,
+        text.read_text(encoding="utf-8"),
+        source=args.source,
+    )
     continuity = load_continuity(project_dir)
     from .revision_manager import mark_revisions_applied
 
     revision_ids = list(getattr(args, "apply_revision", None) or [])
     if revision_ids:
-        applied = mark_revisions_applied(
-            project_dir,
-            episode=args.episode,
-            revision_ids=revision_ids,
-            applied_to_kind="approved_script",
-            applied_to_version=active_version_id(project_dir, "approved_script", args.episode) or "",
-        )
-        print(f"已绑定 applied 的修改意见：{applied} 条")
-    print(f"定稿已保存：{path}")
+        if approve_result["created"]:
+            applied = mark_revisions_applied(
+                project_dir,
+                episode=args.episode,
+                revision_ids=revision_ids,
+                applied_to_kind="approved_script",
+                applied_to_version=approve_result["version"],
+            )
+            print(f"已绑定 applied 的修改意见：{applied} 条")
+        else:
+            print("定稿内容未变化（幂等复用旧版本），不绑定 applied；请先实际修改再确认。")
+    print(f"定稿已保存：{approve_result['path']}（{approve_result['version']}）")
     print(f"连续性已更新（version={continuity.get('version')}，extraction_mode={continuity.get('extraction_mode')}）")
     return 0
 
@@ -1297,6 +1372,20 @@ def cmd_check_api(args) -> int:
     return 0
 
 
+def cmd_cancel_rewrite_ticket(args) -> int:
+    project_dir = _project_dir(args)
+    from .rewrite_ticket import cancel_rewrite_ticket
+
+    record = cancel_rewrite_ticket(
+        project_dir,
+        args.ticket_id,
+        reason=args.reason,
+        operator=args.operator,
+    )
+    print(json.dumps(record, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_status(args) -> int:
     project_dir = _project_dir(args)
     status = project_status(project_dir)
@@ -1464,6 +1553,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--rewrite-ticket", default=None, help="一次性重写凭证（由 rewrite 命令签发，Host Agent 保存重写稿时必须提交）")
     p.add_argument("--context-hash", default=None, help=argparse.SUPPRESS)
     p.add_argument("--apply-revision", action="append", default=[], help="显式绑定已执行的修改意见 revision_id（可重复）")
+    p.add_argument("--manual-edit", action="store_true", default=False, help="显式声明人工修改（取消该绑定下已签发的 rewrite ticket）")
+    p.add_argument("--manual-reason", default="")
     p.set_defaults(func=cmd_save_draft)
 
     p = sub.add_parser("review")
@@ -1560,6 +1651,13 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("check-api")
     p.add_argument("--dir", required=True)
     p.set_defaults(func=cmd_check_api)
+
+    p = sub.add_parser("cancel-rewrite-ticket")
+    p.add_argument("--dir", required=True)
+    p.add_argument("--ticket-id", required=True)
+    p.add_argument("--reason", default="")
+    p.add_argument("--operator", default="cli")
+    p.set_defaults(func=cmd_cancel_rewrite_ticket)
 
     p = sub.add_parser("export")
     p.add_argument("--dir", required=True)

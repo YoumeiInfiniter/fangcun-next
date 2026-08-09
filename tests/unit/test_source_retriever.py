@@ -30,7 +30,7 @@ class SourceRetrieverTests(unittest.TestCase):
                 "chapter_id": 1,
                 "event": "系统发布任务",
                 "importance": "mainline",
-                "source_span": {"start": 0, "end": 40},
+                "source_span": {"start": 0, "end": 30},
                 "key_quotes": [
                     {"speaker": "谢淮舟", "text": "吃得苦中苦，你就能得到——", "must_preserve_pairing": True},
                     {"speaker": "叶聆", "text": "吃不完的苦。", "must_preserve_pairing": True},
@@ -42,7 +42,7 @@ class SourceRetrieverTests(unittest.TestCase):
                 "event": "雷击错绑",
                 "dependencies": ["CH001-E01"],
                 "importance": "mainline",
-                "source_span": {"start": 60, "end": 130},
+                "source_span": {"start": 30, "end": 60},
             },
         ]
 

@@ -132,6 +132,9 @@ def save_continuity_delta(
 
     ensure_valid(delta, "continuity-delta.schema.json")
     delta_content = dict(delta)
+    for key, expected in (("episode", episode), ("draft_version", draft_version), ("script_hash", script_hash)):
+        if key in delta_content and delta_content[key] != expected:
+            raise ValueError(f"delta 内嵌 {key} 与保存参数不一致，拒绝保存")
     delta_content["episode"] = episode
     delta_content["draft_version"] = draft_version
     delta_content["script_hash"] = script_hash
@@ -167,7 +170,15 @@ def _load_delta(project_dir: Path, episode: int, script_hash: str) -> dict | Non
     pointer = read_json(_delta_pointer_path(project_dir, episode, script_hash))
     if not isinstance(pointer, dict):
         return None
-    path = _delta_dir(project_dir) / (pointer.get("delta_path") or "")
+    raw_path = str(pointer.get("delta_path") or "")
+    candidate = Path(raw_path)
+    if candidate.is_absolute():
+        return None
+    path = (_delta_dir(project_dir) / candidate).resolve()
+    try:
+        path.relative_to(_delta_dir(project_dir).resolve())
+    except ValueError:
+        return None
     if not path.exists():
         return None
     try:
@@ -179,6 +190,12 @@ def _load_delta(project_dir: Path, episode: int, script_hash: str) -> dict | Non
     data["_content_hash"] = sha256_text(canonical_json(data) + "\n")
     if data["_content_hash"] != pointer.get("delta_content_hash"):
         return None
+    if data.get("episode") != episode:
+        return None
+    if data.get("script_hash") != script_hash:
+        return None
+    if data.get("draft_version") != pointer.get("approved_version"):
+        return None
     return data
 
 
@@ -186,6 +203,10 @@ def _delta_complete(delta: dict) -> bool:
     return bool(
         delta.get("facts")
         or delta.get("character_knowledge")
+        or delta.get("character_states")
+        or delta.get("relationship_states")
+        or delta.get("props")
+        or delta.get("locations")
         or delta.get("open_hooks")
         or delta.get("resolved_hooks")
         or delta.get("future_overrides")
@@ -299,9 +320,19 @@ def refresh_continuity(project_dir: Path, up_to_episode: int | None = None) -> d
         continuity["extraction_mode"] = "model_assisted"
     else:
         continuity["extraction_mode"] = "mixed"
+    from .revision_manager import list_revisions
+
     continuity["writer_overrides"] = [
-        {"revision_id": r.get("revision_id"), "instruction": r.get("instruction"), "episode": r.get("episode"), "status": r.get("status")}
-        for r in writer_overrides(project_dir)
+        {
+            "revision_id": r.get("revision_id"),
+            "instruction": r.get("instruction"),
+            "episode": r.get("episode"),
+            "status": r.get("status"),
+            "scope": r.get("scope"),
+            "affects_future": r.get("affects_future"),
+        }
+        for r in list_revisions(project_dir)
+        if r.get("status") in ("approved", "applied")
     ]
     continuity["updated_at"] = now_iso()
     if not continuity.get("episode_extraction"):
@@ -332,6 +363,11 @@ def _merge_delta(
         for item in knowledge:
             if item not in known:
                 known.append(item)
+    for section in ("character_states", "relationship_states", "props", "locations"):
+        incoming = delta.get(section) or {}
+        target = continuity.setdefault(section, {})
+        for key, value in incoming.items():
+            target[key] = value
     for hook in delta.get("open_hooks", []) or []:
         if not any(h.get("hook") == hook.get("hook") for h in continuity.setdefault("open_hooks", [])):
             continuity["open_hooks"].append({**hook, "introduced_in": episode, "status": "open"})
@@ -349,7 +385,7 @@ def _merge_delta(
     return continuity
 
 
-def apply_approved_script(project_dir: Path, episode: int, script_text: str, source: str = "writer") -> Path:
+def apply_approved_script(project_dir: Path, episode: int, script_text: str, source: str = "writer") -> dict:
     """Register an approved script and refresh continuity from all approvals."""
     from .script_validator import validate_script
     from .common import sha256_text
@@ -373,4 +409,9 @@ def apply_approved_script(project_dir: Path, episode: int, script_text: str, sou
         meta={"script_hash": script_hash},
     )
     refresh_continuity(project_dir)
-    return result["path"]
+    return {
+        "path": result["path"],
+        "version": result["version"],
+        "created": result["created"],
+        "content_hash": script_hash,
+    }

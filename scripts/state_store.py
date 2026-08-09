@@ -36,6 +36,10 @@ from .common import (
 MANIFEST_SCHEMA = "project-manifest.schema.json"
 
 
+class ArtifactStateError(RuntimeError):
+    """Active artifact state is inconsistent, tampered, or out of bounds."""
+
+
 def _default_manifest(project_id: str) -> dict:
     return {
         "schema_version": 1,
@@ -306,24 +310,80 @@ def record_artifact(
 
 
 def active_artifact_path(project_dir: Path, kind: str, episode: int | None = None) -> Path | None:
-    key = artifact_key(kind, episode)
-    versions = load_active_versions(project_dir)
-    value = versions.get(key)
-    if isinstance(value, dict):
-        value = value.get("path")
-    return (project_dir / value).resolve() if value else None
+    result = resolve_active(project_dir, kind, episode)
+    return result["path"] if result else None
 
 
 def active_version_id(project_dir: Path, kind: str, episode: int | None = None) -> str | None:
+    result = resolve_active(project_dir, kind, episode)
+    return result["version"] if result else None
+
+
+def resolve_active(
+    project_dir: Path,
+    kind: str,
+    episode: int | None = None,
+) -> dict | None:
+    """Single trusted active-artifact resolver (R3-P0-1).
+
+    Manifest is the single source of truth. active_versions is only a
+    verifiable index: any contradiction blocks. The resolved path must stay
+    inside project_dir and its content hash must match the version record.
+    """
     key = artifact_key(kind, episode)
-    manifest_active = load_manifest(project_dir).get("artifacts", {}).get(key, {}).get("active_version")
-    if manifest_active:
-        return manifest_active
-    versions = load_active_versions(project_dir)
-    value = versions.get(key)
-    if isinstance(value, dict):
-        return value.get("version")
-    return None
+    manifest = load_manifest(project_dir)
+    entry = manifest.get("artifacts", {}).get(key)
+    if not entry or not entry.get("active_version"):
+        return None
+    version = entry["active_version"]
+    record = next((r for r in entry.get("versions", []) if r.get("version") == version), None)
+    if record is None:
+        raise ArtifactStateError(f"{key}: manifest active_version {version} 没有对应版本记录")
+    index = load_active_versions(project_dir).get(key)
+    if index is not None:
+        if isinstance(index, dict):
+            index_version = index.get("version")
+            index_path = index.get("path")
+        else:
+            index_version = None
+            index_path = index
+        if index_version is not None and index_version != version:
+            raise ArtifactStateError(
+                f"{key}: active_versions 索引版本 {index_version} 与 manifest 版本 {version} 不一致"
+            )
+        if index_path is not None and index_path != record.get("path"):
+            raise ArtifactStateError(
+                f"{key}: active_versions 索引路径与 manifest 版本记录不一致"
+            )
+    path = _validated_version_path(project_dir, record)
+    return {"version": version, "path": path, "record": record}
+
+
+def _validated_version_path(project_dir: Path, record: dict) -> Path:
+    raw = str(record.get("path", ""))
+    if not raw:
+        raise ArtifactStateError("版本记录缺少 path")
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = project_dir / candidate
+    try:
+        resolved = candidate.resolve()
+        resolved.relative_to(project_dir.resolve())
+    except (ValueError, OSError) as exc:
+        raise ArtifactStateError(f"artifact 路径逃逸项目目录或非法：{raw}") from exc
+    if not resolved.exists():
+        raise ArtifactStateError(f"artifact 文件缺失：{raw}")
+    try:
+        if resolved.suffix == ".json":
+            content = read_json(resolved)
+            actual_hash = sha256_text(canonical_json(content) + "\n")
+        else:
+            actual_hash = sha256_text(resolved.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ArtifactStateError(f"artifact 文件不可读或损坏：{raw}") from exc
+    if actual_hash != record.get("content_hash"):
+        raise ArtifactStateError(f"artifact 文件哈希与版本记录不一致（可能被篡改）：{raw}")
+    return resolved
 
 
 def artifact_version_path(

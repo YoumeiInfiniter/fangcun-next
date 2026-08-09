@@ -139,6 +139,7 @@ class Round1BypassBase(unittest.TestCase):
         context_hash: str | None = None,
         rewrite_ticket: str | None = None,
         apply_revision_ids: list[str] | None = None,
+        manual_edit: bool = False,
     ) -> str:
         path = self.root / f"draft_ep{episode}.txt"
         path.write_text(text, encoding="utf-8")
@@ -147,6 +148,8 @@ class Round1BypassBase(unittest.TestCase):
             argv += ["--context-hash", context_hash]
         if rewrite_ticket:
             argv += ["--rewrite-ticket", rewrite_ticket]
+        if manual_edit:
+            argv += ["--manual-edit", "--manual-reason", "writer manual edit"]
         for revision_id in apply_revision_ids or []:
             argv += ["--apply-revision", revision_id]
         _run(*argv)
@@ -576,6 +579,7 @@ class BypassRevisionTests(Round1BypassBase):
             1,
             "第1集：第1集\n\n1-1 家 夜 内\n人物：叶聆、996\n\n△人工动作。\n叶聆：什么动静？\n996：人工台词。\n",
             context_hash=meta2["context_hash"],
+            manual_edit=True,
         )
         v3 = active_version_id(self.project_dir, "script_draft", 1)
         meta3 = draft_meta_record(self.project_dir, 1, v3)

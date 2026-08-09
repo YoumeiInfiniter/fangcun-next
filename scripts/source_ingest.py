@@ -111,6 +111,7 @@ def ingest_novel(project_dir: Path, source_file: Path, *, overwrite: bool = Fals
         "source_hash": source_hash,
         "total_chars": len(text),
         "created_at": now_iso(),
+        "coordinate_base": "chapter_file_content",
         "chapters": chapters,
     }
     atomic_write_json(chapter_index_path(project_dir), index)

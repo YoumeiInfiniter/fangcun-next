@@ -133,22 +133,32 @@ def _excerpt_for_keyword(chapter_text: str, chapter: dict, keyword: str, budget:
 
 def _pair_span(chapter_text: str, setup: str | None, payoff: str | None) -> tuple[int, int] | None:
     """Union span covering both setup and payoff (indivisible unit)."""
+    if not setup or not payoff:
+        return None
     s1 = chapter_text.find(setup) if setup else -1
     s2 = chapter_text.find(payoff) if payoff else -1
     if s1 < 0 and s2 < 0:
         return None
-    if s1 < 0:
-        s1 = s2
-    if s2 < 0:
-        s2 = s1
+    if s1 < 0 or s2 < 0:
+        return None
     start = min(s1, s2)
     end = max(s1 + len(setup or ""), s2 + len(payoff or ""))
     return _snap_span(chapter_text, start, end)
 
 
-def _event_excerpts(chapter_text: str, chapter: dict, event: dict, budget: int) -> list[dict]:
+def _event_excerpts(chapter_text: str, chapter: dict, event: dict, budget: int) -> tuple[list[dict], bool]:
     span = event.get("source_span") or {}
-    start, end = span.get("start", 0), span.get("end", len(chapter_text))
+    if not isinstance(span, dict) or "start" not in span or "end" not in span:
+        # Missing span: keep a degraded whole-chapter excerpt (needs re-anchor),
+        # but never claim a precise event location.
+        return [_make_excerpt(chapter_text, chapter, 0, len(chapter_text), f"event:{event.get('event_id')}")], True
+    start, end = span.get("start"), span.get("end")
+    if (
+        not isinstance(start, int)
+        or not isinstance(end, int)
+        or not (0 <= start < end <= len(chapter_text))
+    ):
+        return [], True
     start, end = _snap_span(chapter_text, start, end)
     for quote in event.get("key_quotes", []) or []:
         qtext = quote.get("text", "")
@@ -181,8 +191,8 @@ def _event_excerpts(chapter_text: str, chapter: dict, event: dict, budget: int) 
             s3, e3 = _snap_span(chapter_text, start, e3)
         start, end = s3, e3
     if end > start:
-        return [_make_excerpt(chapter_text, chapter, start, end, f"event:{event.get('event_id')}")]
-    return []
+        return [_make_excerpt(chapter_text, chapter, start, end, f"event:{event.get('event_id')}")], False
+    return [], True
 
 
 def _dedupe_excerpts(excerpts: list[dict]) -> list[dict]:
@@ -238,6 +248,8 @@ def _retrieve(
     excerpts: list[dict] = []
     chapter_ids: list[int] = []
     used_order: list[str] = []
+    degraded_event_ids: set[str] = set()
+    anchor_fail_reasons: dict[int, str] = {}
 
     for event in resolved_events:
         ch_id = event.get("chapter_id")
@@ -248,7 +260,10 @@ def _retrieve(
             chapter_ids.append(ch_id)
         meta = chapter_meta.get(ch_id, {})
         chapter = {"chapter_index": ch_id, "title": meta.get("title", ""), "file": meta.get("file", "")}
-        excerpts.extend(_event_excerpts(chapter_text, chapter, event, per_chapter_budget))
+        event_excerpts, degraded = _event_excerpts(chapter_text, chapter, event, per_chapter_budget)
+        excerpts.extend(event_excerpts)
+        if degraded:
+            degraded_event_ids.add(event["event_id"])
     if anchor_ids or resolved_events:
         used_order.append("event_ids")
 
@@ -284,6 +299,7 @@ def _retrieve(
             continue
         # Both ends must exist; a lone end is NOT a valid pair.
         if not setup or not payoff:
+            anchor_fail_reasons[idx] = "missing_setup" if not setup else "missing_payoff"
             continue
         for ch_id in chapter_ids:
             chapter_text = chapters.get(ch_id)
@@ -297,6 +313,8 @@ def _retrieve(
                 chapter_dict = {"chapter_index": ch_id, "title": meta.get("title", ""), "file": meta.get("file", "")}
                 excerpts.append(_make_excerpt(chapter_text, chapter_dict, span[0], span[1], f"dialogue_anchor:{idx:03d}"))
                 break
+        else:
+            anchor_fail_reasons[idx] = "pair_not_in_same_chapter"
 
     if len(excerpts) < len(anchor_ids) + len(anchor_chapters) or not excerpts:
         keyword_events = list(resolved_events)
@@ -377,6 +395,8 @@ def _retrieve(
         kept=kept,
         events_by_id=events_by_id,
         fallback_used=fallback_used,
+        degraded_event_ids=degraded_event_ids,
+        anchor_fail_reasons=anchor_fail_reasons,
     )
 
     return {
@@ -390,6 +410,7 @@ def _retrieve(
             "fallback_used": fallback_used,
             "truncated": truncated,
             "total_excerpt_chars": total,
+            "degraded_events": sorted(degraded_event_ids),
         },
     }
 
@@ -404,6 +425,8 @@ def _build_coverage(
     kept: list[dict],
     events_by_id: dict[str, dict],
     fallback_used: bool,
+    degraded_event_ids: set[str],
+    anchor_fail_reasons: dict[int, str],
 ) -> list[dict]:
     ledger: list[dict] = []
     kept_text = "\n".join(ex.get("text", "") for ex in kept)
@@ -416,7 +439,8 @@ def _build_coverage(
         event = events_by_id.get(eid)
         resolved = event is not None
         included = resolved and _has_event_excerpt(eid)
-        degraded = bool(resolved and not (event or {}).get("source_span"))
+        degraded = bool(resolved and (not (event or {}).get("source_span") or eid in degraded_event_ids))
+        degraded_reason = "needs_reanchor" if degraded else ""
         ledger.append(
             {
                 "anchor_type": "event",
@@ -426,8 +450,12 @@ def _build_coverage(
                 "included": included,
                 "omitted": not included,
                 "degraded": degraded,
-                "degraded_reason": "needs_reanchor" if degraded else "",
-                "reason": "" if included else ("event_not_found" if not resolved else "no_excerpt"),
+                "degraded_reason": degraded_reason,
+                "reason": (
+                    ""
+                    if included
+                    else ("event_not_found" if not resolved else ("needs_reanchor" if degraded else "no_excerpt"))
+                ),
             }
         )
     for dep in dep_ids:
@@ -460,6 +488,7 @@ def _build_coverage(
         if not (anchor.get("setup") or anchor.get("payoff")):
             continue
         included = any(ex.get("reason") == f"dialogue_anchor:{idx:03d}" for ex in kept)
+        fail_reason = anchor_fail_reasons.get(idx, "" if included else "pair_not_in_chapter_or_budget")
         ledger.append(
             {
                 "anchor_type": "dialogue_anchor",
@@ -468,7 +497,7 @@ def _build_coverage(
                 "resolved": included,
                 "included": included,
                 "omitted": not included,
-                "reason": "" if included else "pair_not_in_chapter_or_budget",
+                "reason": "" if included else fail_reason,
             }
         )
     for idx, item in enumerate(outline.get("must_keep", []) or []):
