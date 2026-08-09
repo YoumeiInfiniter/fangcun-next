@@ -11,4 +11,4 @@
 
 只依据已确认剧本，不依据旧集纲。与旧集纲冲突时，已确认剧本优先，旧集纲保留历史版本。
 
-输出 continuity-state.schema.json 兼容 JSON。
+输出 continuity-delta.schema.json 兼容 JSON；未知字段会被拒绝，不要自造键名。

@@ -5,6 +5,10 @@
   "required": ["extraction_mode"],
   "properties": {
     "extraction_mode": {"type": "string", "enum": ["deterministic", "host_agent", "model_assisted"]},
+    "episode": {"type": "integer", "minimum": 1},
+    "draft_version": {"type": "string", "pattern": "^v[0-9]+$"},
+    "script_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "project_instance_id": {"type": "string", "minLength": 1},
     "facts": {
       "type": "array",
       "items": {
@@ -14,9 +18,11 @@
           "fact_id": {"type": "string", "minLength": 1},
           "category": {"type": "string", "minLength": 1},
           "fact": {"type": "string", "minLength": 1},
+          "episode": {"type": "integer", "minimum": 1},
           "evidence_location": {"type": "string", "minLength": 1},
           "status": {"type": "string", "enum": ["active", "superseded", "resolved"]}
-        }
+        },
+        "additionalProperties": false
       }
     },
     "character_knowledge": {"type": "object"},
@@ -30,14 +36,16 @@
       "type": "array",
       "items": {
         "type": "object",
+        "required": ["instruction"],
         "properties": {
           "instruction": {"type": "string"},
           "scope": {"type": "string"},
           "episode_target": {"type": "integer"}
-        }
+        },
+        "additionalProperties": false
       }
     },
     "notes": {"type": "array", "items": {"type": "string"}}
   },
-  "additionalProperties": true
+  "additionalProperties": false
 }

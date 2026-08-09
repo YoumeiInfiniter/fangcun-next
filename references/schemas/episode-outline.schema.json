@@ -18,13 +18,27 @@
   "properties": {
     "episode": {"type": "integer", "minimum": 1},
     "title": {"type": "string", "minLength": 1},
-    "source_event_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
-    "source_chapters": {"type": "array", "items": {"type": "integer"}, "minItems": 1},
+    "source_event_ids": {"type": "array", "items": {"type": "string"}},
+    "source_chapters": {"type": "array", "items": {"type": "integer"}},
     "opening_bridge": {"type": "string"},
     "episode_goal": {"type": "string", "minLength": 1},
     "must_keep": {
       "type": "array",
-      "items": {"type": ["string", "object"]},
+      "items": {
+        "oneOf": [
+          {"type": "string", "minLength": 1},
+          {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1},
+              "event_id": {"type": "string", "minLength": 1},
+              "adaptation_decision_id": {"type": "string", "minLength": 1}
+            },
+            "additionalProperties": false
+          }
+        ]
+      },
       "minItems": 1
     },
     "causal_chains": {
@@ -55,7 +69,23 @@
     "suggested_seconds": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
     "writer_notes": {"type": "array", "items": {"type": "string"}},
     "episode_function": {"type": "array", "items": {"type": "string"}},
-    "adaptation_basis": {"type": "array", "items": {"type": ["string", "object"]}}
+    "adaptation_basis": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "text"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "text": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": true
+      }
+    }
   },
+  "anyOf": [
+    {"properties": {"source_event_ids": {"minItems": 1}}},
+    {"properties": {"source_chapters": {"minItems": 1}}},
+    {"required": ["adaptation_basis"], "properties": {"adaptation_basis": {"minItems": 1}}}
+  ],
   "additionalProperties": true
 }

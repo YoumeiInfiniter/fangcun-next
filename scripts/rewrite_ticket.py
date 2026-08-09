@@ -96,11 +96,17 @@ def cancel_rewrite_ticket(
     reason: str = "",
     operator: str = "cli",
 ) -> dict:
+    reason = str(reason or "").strip()
+    operator = str(operator or "").strip()
+    if not reason:
+        raise ValueError("取消 rewrite ticket 必须提供非空 reason")
+    if not operator:
+        raise ValueError("取消 rewrite ticket 必须提供非空 operator")
     current = ticket_state(project_dir, ticket_id)
     if current is None:
         raise ValueError(f"rewrite ticket 不存在：{ticket_id}")
-    if current.get("status") == "consumed":
-        raise ValueError(f"rewrite ticket {ticket_id} 已消费，不能取消")
+    if current.get("status") != "issued":
+        raise ValueError(f"rewrite ticket {ticket_id} 状态为 {current.get('status')}，不能取消")
     cancelled = {**current, "status": "cancelled", "cancelled_at": now_iso(), "reason": reason, "operator": operator}
     jsonl_append(_ticket_path(project_dir), cancelled)
     return cancelled
@@ -171,13 +177,21 @@ def consume_rewrite_ticket(
     return consumed
 
 
-def latest_issued_ticket(project_dir: Path, episode: int) -> dict | None:
-    """Return the most recent issued ticket for an episode (if any)."""
+def latest_issued_ticket(
+    project_dir: Path,
+    episode: int,
+    *,
+    context_hash: str | None = None,
+) -> dict | None:
+    """Return the newest still-issued ticket for an episode/binding."""
     latest_by_id: dict[str, dict] = {}
     for record in read_jsonl(_ticket_path(project_dir)):
         if record.get("episode") == episode:
             latest_by_id[record.get("ticket_id")] = record
-    for record in latest_by_id.values():
-        if record.get("status") == "issued":
+    for record in reversed(list(latest_by_id.values())):
+        if (
+            record.get("status") == "issued"
+            and (context_hash is None or record.get("context_hash") == context_hash)
+        ):
             return record
     return None

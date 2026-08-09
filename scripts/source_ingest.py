@@ -16,7 +16,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from .common import atomic_write_json, ensure_dir, now_iso, sha256_file, read_json
+from .common import atomic_write_json, ensure_dir, now_iso, sha256_file, sha256_text, read_json
 
 
 CHAPTER_HEADING = re.compile(
@@ -98,12 +98,14 @@ def ingest_novel(project_dir: Path, source_file: Path, *, overwrite: bool = Fals
     ch_dir = ensure_dir(chapters_dir(project_dir))
     for chapter in chapters:
         ch_num = chapter["chapter_index"]
-        body = text[chapter["span"]["start"] : chapter["span"]["end"]].strip()
-        title = _safe_chapter_title(chapter, ch_num)
+        # The chapter file is the canonical coordinate surface. Preserve the
+        # exact raw chapter slice; title remains metadata and is never prepended.
+        body = text[chapter["span"]["start"] : chapter["span"]["end"]]
         ch_path = ch_dir / f"chapter_{ch_num:03d}.txt"
-        ch_path.write_text(f"{title}\n\n{body}\n", encoding="utf-8")
+        ch_path.write_text(body, encoding="utf-8")
         chapter["file"] = f"source/chapters/chapter_{ch_num:03d}.txt"
         chapter["text_length"] = len(body)
+        chapter["content_hash"] = sha256_text(body)
 
     index = {
         "schema_version": 1,
@@ -112,6 +114,7 @@ def ingest_novel(project_dir: Path, source_file: Path, *, overwrite: bool = Fals
         "total_chars": len(text),
         "created_at": now_iso(),
         "coordinate_base": "chapter_file_content",
+        "coordinate_contract": "zero_based_half_open_utf8_text",
         "chapters": chapters,
     }
     atomic_write_json(chapter_index_path(project_dir), index)

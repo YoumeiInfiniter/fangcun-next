@@ -6,6 +6,7 @@
   "properties": {
     "schema_version": {"type": "integer"},
     "project_id": {"type": "string"},
+    "project_instance_id": {"type": "string", "minLength": 1},
     "created_at": {"type": "string"},
     "updated_at": {"type": "string"},
     "artifacts": {"type": "object"}

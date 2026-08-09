@@ -159,6 +159,8 @@ def cmd_ingest_source(args) -> int:
 
 def cmd_save_events(args) -> int:
     project_dir = _project_dir(args)
+    from .source_ingest import read_chapter
+
     data = _load_json_file(Path(args.file), "事件资产")
     events = data.get("events", data) if isinstance(data, dict) else data
     if not isinstance(events, list):
@@ -175,6 +177,37 @@ def cmd_save_events(args) -> int:
                 raise CliError(
                     f"事件 {event.get('event_id', '?')} source_span 非法（必须满足 0 <= start < end）：{span}"
                 )
+            chapter_result = read_chapter(project_dir, event["chapter_id"])
+            if chapter_result is None:
+                raise CliError(f"事件 {event.get('event_id', '?')} 引用的章节 {event['chapter_id']} 不存在")
+            chapter_text, chapter_meta = chapter_result
+            coordinate_base = event.get("coordinate_base")
+            if coordinate_base not in (None, "chapter_file_content"):
+                raise CliError(
+                    f"事件 {event.get('event_id', '?')} coordinate_base 必须为 chapter_file_content"
+                )
+            expected_chapter_hash = chapter_meta.get("content_hash") or sha256_text(chapter_text)
+            supplied_chapter_hash = event.get("chapter_content_hash")
+            if supplied_chapter_hash and supplied_chapter_hash != expected_chapter_hash:
+                raise CliError(f"事件 {event.get('event_id', '?')} chapter_content_hash 与当前章节不一致")
+            event["coordinate_base"] = "chapter_file_content"
+            event["chapter_content_hash"] = expected_chapter_hash
+            if end <= len(chapter_text):
+                excerpt = chapter_text[start:end]
+                source_quote = str(event.get("source_quote") or "")
+                if source_quote and source_quote not in excerpt:
+                    raise CliError(f"事件 {event.get('event_id', '?')} source_quote 不位于 source_span 内")
+                excerpt_hash = sha256_text(excerpt)
+                supplied_excerpt_hash = event.get("source_excerpt_hash")
+                if supplied_excerpt_hash and supplied_excerpt_hash != excerpt_hash:
+                    raise CliError(f"事件 {event.get('event_id', '?')} source_excerpt_hash 与 source_span 不一致")
+                event["source_excerpt_hash"] = excerpt_hash
+                event.pop("needs_reanchor", None)
+            else:
+                # Legacy/out-of-range events remain importable but are explicit
+                # degraded data and can never resolve to a precise excerpt.
+                event["needs_reanchor"] = True
+                event.pop("source_excerpt_hash", None)
     result = commit_artifact(
         project_dir,
         "source_events",
@@ -456,8 +489,8 @@ def cmd_save_draft(args) -> int:
 
     manual_edit = bool(getattr(args, "manual_edit", False))
     if not ticket_id and not manual_edit:
-        issued = latest_issued_ticket(project_dir, args.episode)
-        if issued is not None and issued.get("context_hash") == context_hash:
+        issued = latest_issued_ticket(project_dir, args.episode, context_hash=context_hash)
+        if issued is not None:
             raise CliError(
                 f"该草稿上下文存在未消费的 rewrite ticket（{issued['ticket_id']}）。"
                 "省略 ticket 不能登记为人工稿；请提交 --rewrite-ticket 消费，"
@@ -644,8 +677,8 @@ def _validate_issue_evidence(issue: dict, context: dict) -> list[str]:
                 errors.append(f"证据 source_span 必须满足 0 <= start < end（收到 {span}）")
         elif span is not None:
             errors.append("证据 source_span 必须是对象")
-        if not quote and not event_id and not chapter_id and not isinstance(span, dict):
-            errors.append("证据没有任何可验证维度（quote/event_id/chapter/span 至少一项）")
+        if not quote and not isinstance(span, dict) and not excerpt_hash:
+            errors.append("source error 证据缺少可定位 quote/source_span/excerpt_hash；event_id 或 chapter_id 不能单独证明问题")
         candidates = excerpts
         if event_id:
             event_excerpts = [ex for ex in excerpts if ex.get("reason") == f"event:{event_id}"]
@@ -687,6 +720,19 @@ def _validate_issue_evidence(issue: dict, context: dict) -> list[str]:
             )
             if event is not None and event.get("chapter_id") not in (None, chapter_id):
                 errors.append(f"证据 event_id {event_id} 的章节与 chapter_id {chapter_id} 冲突")
+        if event_id and isinstance(span, dict):
+            event = next(
+                (e for e in context.get("source_evidence", {}).get("events", []) or [] if e.get("event_id") == event_id),
+                None,
+            )
+            event_span = (event or {}).get("source_span") or {}
+            if not (
+                isinstance(event_span.get("start"), int)
+                and isinstance(event_span.get("end"), int)
+                and event_span["start"] <= span.get("start", -1)
+                and span.get("end", -1) <= event_span["end"]
+            ):
+                errors.append(f"证据 span 不位于事件 {event_id} 自身 source_span 内")
     elif evidence_type == "adaptation":
         decision_id = evidence.get("adaptation_decision_id")
         decisions = (context.get("adaptation_summary") or {}).get("decisions") or []

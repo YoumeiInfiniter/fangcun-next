@@ -890,23 +890,16 @@ class Round3LifecycleTests(Round1BypassBase):
         self._save_review(1, self._review_report(1))
         # Tamper review → rewrite must block.
         review_path = active_artifact_path(self.project_dir, "review", 1)
+        original_review = review_path.read_text(encoding="utf-8")
         review = json.loads(review_path.read_text(encoding="utf-8"))
         review["summary"] = "篡改"
         review_path.write_text(json.dumps(review, ensure_ascii=False), encoding="utf-8")
         _run("rewrite", "--dir", str(self.project_dir), "--episode", "1", expect=1)
         # Restore review, tamper draft → review must block.
-        version = load_manifest(self.project_dir)["artifacts"]["review:1"]["active_version"]
-        from scripts.state_store import artifact_version_path as vp
-
-        restored = vp(self.project_dir, "review", 1, version).read_text(encoding="utf-8")
-        review_path.write_text(restored, encoding="utf-8")
+        review_path.write_text(original_review, encoding="utf-8")
         draft_path = active_artifact_path(self.project_dir, "script_draft", 1)
         draft_path.write_text(draft_path.read_text(encoding="utf-8") + "tamper", encoding="utf-8")
         _run("review", "--dir", str(self.project_dir), "--episode", "1", expect=1)
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 if __name__ == "__main__":

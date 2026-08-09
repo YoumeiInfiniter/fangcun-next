@@ -44,7 +44,7 @@ SPANNED_EVENTS = [
         "chapter_id": 1,
         "event": "雷击错绑",
         "importance": "mainline",
-        "source_span": {"start": 60, "end": 90},
+        "source_span": {"start": 60, "end": 89},
         "key_quotes": [
             {"speaker": "996", "text": "绑错惩罚对象了。", "must_preserve_pairing": True, "pair_id": "P2"}
         ],

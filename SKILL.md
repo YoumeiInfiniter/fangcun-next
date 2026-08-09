@@ -41,7 +41,7 @@ description: |
 | 初始化项目 | `fangcun init --dir <project> --config <config.json>` |
 | 发来原始需求 | `init --brief "..."` 后 `generate-requirements` → `save-requirements` |
 | 发来小说文件 | `ingest-source --dir <project> --file <novel.txt>` |
-| 提取事件 | `save-events --dir <project> --file <events.json>` |
+| 提取事件 | 读取 `source/index.json` 及其章节文件，按 `references/prompts/stage_events.md` 生成 JSON，再执行 `save-events --dir <project> --file <events.json>` |
 | 容量预估 | `estimate-capacity --dir <project>` |
 | 改编指引 | `generate-adaptation` → `save-adaptation --file <strategy.md>` |
 | 故事大纲 | `generate-story-outline` → `save-story-outline --file <outline.md>` |

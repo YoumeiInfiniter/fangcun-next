@@ -53,6 +53,10 @@ class SourceIngestTests(unittest.TestCase):
         self.assertEqual(files, ["chapter_001.txt", "chapter_002.txt", "chapter_003.txt"])
         index = load_chapter_index(self.project_dir)
         self.assertEqual(index["total_chars"], len(NOVEL))
+        self.assertEqual(index["coordinate_base"], "chapter_file_content")
+        first = index["chapters"][0]
+        stored = (self.project_dir / first["file"]).read_text(encoding="utf-8")
+        self.assertEqual(stored, NOVEL[first["span"]["start"] : first["span"]["end"]])
         self.assertEqual(len(read_all_chapters(self.project_dir)), 3)
 
     def test_ingest_is_idempotent_on_same_file(self):
@@ -70,4 +74,3 @@ class SourceIngestTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

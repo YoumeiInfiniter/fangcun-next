@@ -8,6 +8,7 @@ Continuity can always be rebuilt from all approved scripts.
 
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -115,6 +116,11 @@ def _delta_dir(project_dir: Path) -> Path:
 
 
 def _delta_pointer_path(project_dir: Path, episode: int, script_hash: str) -> Path:
+    return _delta_dir(project_dir) / f"current_EP{episode:03d}_{script_hash}.json"
+
+
+def _legacy_delta_pointer_path(project_dir: Path, episode: int, script_hash: str) -> Path:
+    """Round-3 pointer location, retained only for verified migration reads."""
     return _delta_dir(project_dir) / f"current_EP{episode:03d}_{script_hash[:8]}.json"
 
 
@@ -129,23 +135,37 @@ def save_continuity_delta(
     """Persist a host-agent/model continuity delta (idempotent by content)."""
     from .schema_validate import ensure_valid
     from .common import sha256_text
+    from .state_store import load_manifest, save_manifest
 
     ensure_valid(delta, "continuity-delta.schema.json")
     delta_content = dict(delta)
+    manifest = load_manifest(project_dir)
+    project_instance_id = manifest.get("project_instance_id")
+    if not project_instance_id:
+        project_instance_id = uuid.uuid4().hex
+        manifest["project_instance_id"] = project_instance_id
+        save_manifest(project_dir, manifest)
+    supplied_project_instance = delta_content.get("project_instance_id")
+    if supplied_project_instance and supplied_project_instance != project_instance_id:
+        raise ValueError("delta 内嵌 project_instance_id 与当前项目不一致，拒绝保存")
     for key, expected in (("episode", episode), ("draft_version", draft_version), ("script_hash", script_hash)):
         if key in delta_content and delta_content[key] != expected:
             raise ValueError(f"delta 内嵌 {key} 与保存参数不一致，拒绝保存")
+    for fact in delta_content.get("facts", []) or []:
+        if "episode" in fact and fact.get("episode") != episode:
+            raise ValueError("delta fact.episode 与保存集数不一致，拒绝保存")
     delta_content["episode"] = episode
     delta_content["draft_version"] = draft_version
     delta_content["script_hash"] = script_hash
+    delta_content["project_instance_id"] = project_instance_id
     from .common import canonical_json
 
     content_hash = sha256_text(canonical_json(delta_content) + "\n")
-    path = _delta_dir(project_dir) / f"delta_EP{episode:03d}_{script_hash[:8]}_{content_hash[:8]}.json"
+    path = _delta_dir(project_dir) / f"delta_EP{episode:03d}_{script_hash}_{content_hash}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     from .common import atomic_write_json
 
-    current = _load_delta(project_dir, episode, script_hash)
+    current = _load_delta(project_dir, episode, script_hash, draft_version)
     if current is not None and current.get("_content_hash") == content_hash:
         return path
     atomic_write_json(path, delta_content)
@@ -157,18 +177,34 @@ def save_continuity_delta(
             "script_hash": script_hash,
             "delta_path": path.name,
             "delta_content_hash": content_hash,
+            "project_instance_id": project_instance_id,
             "updated_at": now_iso(),
         },
     )
     return path
 
 
-def _load_delta(project_dir: Path, episode: int, script_hash: str) -> dict | None:
+def _load_delta(project_dir: Path, episode: int, script_hash: str, draft_version: str) -> dict | None:
     from .common import read_json
     from .common import canonical_json
 
+    from .state_store import load_manifest
+
+    project_instance_id = load_manifest(project_dir).get("project_instance_id")
+    if not project_instance_id:
+        return None
     pointer = read_json(_delta_pointer_path(project_dir, episode, script_hash))
     if not isinstance(pointer, dict):
+        pointer = read_json(_legacy_delta_pointer_path(project_dir, episode, script_hash))
+    if not isinstance(pointer, dict):
+        return None
+    if pointer.get("episode") != episode:
+        return None
+    if pointer.get("script_hash") != script_hash:
+        return None
+    if pointer.get("approved_version") != draft_version:
+        return None
+    if pointer.get("project_instance_id") != project_instance_id:
         return None
     raw_path = str(pointer.get("delta_path") or "")
     candidate = Path(raw_path)
@@ -187,6 +223,12 @@ def _load_delta(project_dir: Path, episode: int, script_hash: str) -> dict | Non
         return None
     if not isinstance(data, dict):
         return None
+    try:
+        from .schema_validate import ensure_valid
+
+        ensure_valid(data, "continuity-delta.schema.json")
+    except Exception:
+        return None
     data["_content_hash"] = sha256_text(canonical_json(data) + "\n")
     if data["_content_hash"] != pointer.get("delta_content_hash"):
         return None
@@ -194,7 +236,9 @@ def _load_delta(project_dir: Path, episode: int, script_hash: str) -> dict | Non
         return None
     if data.get("script_hash") != script_hash:
         return None
-    if data.get("draft_version") != pointer.get("approved_version"):
+    if data.get("draft_version") != draft_version:
+        return None
+    if data.get("project_instance_id") != project_instance_id:
         return None
     return data
 
@@ -267,7 +311,7 @@ def refresh_continuity(project_dir: Path, up_to_episode: int | None = None) -> d
         record = artifact_version_record(project_dir, "approved_script", episode, draft_version) or {}
         script_hash = record.get("content_hash") or sha256_text(script_text)
         deterministic = extract_deterministic(episode, script_text)
-        delta = _load_delta(project_dir, episode, script_hash)
+        delta = _load_delta(project_dir, episode, script_hash, draft_version)
         if delta is None:
             model_result = extract_model_assisted(project_dir, episode, script_text)
             if model_result:
@@ -279,7 +323,7 @@ def refresh_continuity(project_dir: Path, up_to_episode: int | None = None) -> d
                         script_hash=script_hash,
                         draft_version=draft_version,
                     )
-                    delta = _load_delta(project_dir, episode, script_hash)
+                    delta = _load_delta(project_dir, episode, script_hash, draft_version)
                 except Exception:
                     delta = None
         if delta is not None:
@@ -379,9 +423,13 @@ def _merge_delta(
             if h.get("hook") != hook.get("hook") and h.get("id") != hook.get("id")
         ]
     for override in delta.get("future_overrides", []) or []:
-        continuity.setdefault("notes_for_future", []).append(
-            f"EP{episode}: {override.get('instruction', '')}"
-        )
+        note = f"EP{episode}: {override.get('instruction', '')}"
+        if note not in continuity.setdefault("notes_for_future", []):
+            continuity["notes_for_future"].append(note)
+    for raw_note in delta.get("notes", []) or []:
+        note = f"EP{episode}: {raw_note}"
+        if note not in continuity.setdefault("notes_for_future", []):
+            continuity["notes_for_future"].append(note)
     return continuity
 
 

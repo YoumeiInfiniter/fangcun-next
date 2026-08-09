@@ -16,6 +16,7 @@ Every mutation is recorded; nothing is silently overwritten.
 
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,7 @@ def _default_manifest(project_id: str) -> dict:
     return {
         "schema_version": 1,
         "project_id": project_id,
+        "project_instance_id": uuid.uuid4().hex,
         "created_at": now_iso(),
         "updated_at": now_iso(),
         "artifacts": {},
@@ -364,8 +366,9 @@ def _validated_version_path(project_dir: Path, record: dict) -> Path:
     if not raw:
         raise ArtifactStateError("版本记录缺少 path")
     candidate = Path(raw)
-    if not candidate.is_absolute():
-        candidate = project_dir / candidate
+    if candidate.is_absolute() or ".." in candidate.parts:
+        raise ArtifactStateError(f"artifact 版本路径必须是项目内无 .. 的相对路径：{raw}")
+    candidate = project_dir / candidate
     try:
         resolved = candidate.resolve()
         resolved.relative_to(project_dir.resolve())
@@ -395,8 +398,7 @@ def artifact_version_path(
     key = artifact_key(kind, episode)
     for record in load_manifest(project_dir).get("artifacts", {}).get(key, {}).get("versions", []):
         if record.get("version") == version:
-            path = project_dir / record["path"]
-            return path if path.exists() else None
+            return _validated_version_path(project_dir, record)
     return None
 
 
@@ -447,17 +449,7 @@ def activate_version(
     record = artifact_version_record(project_dir, kind, episode, version)
     if record is None:
         raise KeyError(f"{key} 版本 {version} 不存在")
-    path = project_dir / record["path"]
-    if not path.exists():
-        raise ValueError(f"{key} 版本 {version} 文件缺失：{path}")
-    if path.suffix == ".json":
-        content = read_json(path)
-        actual_hash = sha256_text(canonical_json(content) + "\n")
-    else:
-        content = path.read_text(encoding="utf-8")
-        actual_hash = sha256_text(content)
-    if actual_hash != record.get("content_hash"):
-        raise ValueError(f"{key} 版本 {version} 文件哈希与 manifest 不一致，拒绝恢复")
+    path = _validated_version_path(project_dir, record)
     manifest = load_manifest(project_dir)
     entry = manifest["artifacts"].setdefault(key, {"active_version": None, "versions": []})
     previous = entry.get("active_version")

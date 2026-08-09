@@ -15,5 +15,12 @@
 
 禁止只为每章提取一个事件。关键台词尽量以引号保留原句。
 
-输出 source-event.schema.json 兼容 JSON。
+坐标契约：
 
+- 只读取 `source/index.json` 列出的 `source/chapters/chapter_NNN.txt`；
+- `source_span` 使用对应章节文件的 Python 字符串坐标，0-based、左闭右开；
+- 标题只取 index metadata，不自行向章节正文前追加标题或换行；
+- 有 span 时同时输出 `coordinate_base: chapter_file_content` 和位于 span 内的 `source_quote`；
+- 不确定准确位置时省略 span，让系统标记 `needs_reanchor`，禁止猜坐标。
+
+输出 source-event.schema.json 兼容 JSON。

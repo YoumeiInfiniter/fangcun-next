@@ -219,8 +219,10 @@ class ContextBuilderTests(unittest.TestCase):
         )
         outlines["episodes"][1]["source_event_ids"] = ["NOPE"]
         outlines["episodes"][1]["source_chapters"] = []
-        outlines["episodes"][1]["adaptation_basis"] = ["编剧要求新增场景"]
-        outlines["episodes"][1]["must_keep"] = ["新增场景"]
+        outlines["episodes"][1]["adaptation_basis"] = [{"id": "D-NEW-SCENE", "text": "编剧要求新增场景"}]
+        outlines["episodes"][1]["must_keep"] = [
+            {"text": "新增场景", "adaptation_decision_id": "D-NEW-SCENE"}
+        ]
         outlines["episodes"][1]["episode_goal"] = "新增目标"
         outlines["episodes"][1]["opening_bridge"] = "新增承接"
         outlines["episodes"][1]["ending_hook"] = "新增钩子"
