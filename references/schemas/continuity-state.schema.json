@@ -11,12 +11,15 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["fact", "episode", "status"],
+        "required": ["fact_id", "category", "fact", "episode", "status", "evidence_location"],
         "properties": {
-          "fact": {"type": "string"},
+          "fact_id": {"type": "string", "minLength": 1},
+          "category": {"type": "string", "minLength": 1},
+          "fact": {"type": "string", "minLength": 1},
           "episode": {"type": "integer", "minimum": 1},
           "introduced_in": {"type": "integer", "minimum": 1},
-          "status": {"type": "string", "enum": ["active", "superseded", "resolved"]}
+          "status": {"type": "string", "enum": ["active", "superseded", "resolved"]},
+          "evidence_location": {"type": "string", "minLength": 1}
         }
       }
     },
@@ -29,7 +32,7 @@
     "locations": {"type": "object"},
     "writer_overrides": {"type": "array", "items": {"type": "object"}},
     "notes_for_future": {"type": "array", "items": {"type": "string"}},
-    "extraction_mode": {"type": "string", "enum": ["deterministic", "model_assisted"]}
+    "extraction_mode": {"type": "string", "enum": ["deterministic", "host_agent", "model_assisted", "mixed"]}
   },
   "additionalProperties": true
 }

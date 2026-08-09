@@ -31,7 +31,10 @@
         "properties": {
           "speaker": {"type": "string"},
           "text": {"type": "string"},
-          "must_preserve_pairing": {"type": "boolean"}
+          "must_preserve_pairing": {"type": "boolean"},
+          "pair_id": {"type": "string"},
+          "setup": {"type": "string"},
+          "payoff": {"type": "string"}
         }
       }
     },
@@ -43,4 +46,3 @@
   },
   "additionalProperties": true
 }
-

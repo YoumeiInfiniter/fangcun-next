@@ -4,17 +4,17 @@
   "type": "object",
   "required": ["extraction_mode"],
   "properties": {
-    "extraction_mode": {"type": "string", "enum": ["host_agent", "model_assisted"]},
+    "extraction_mode": {"type": "string", "enum": ["deterministic", "host_agent", "model_assisted"]},
     "facts": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["fact"],
+        "required": ["fact_id", "category", "fact", "evidence_location"],
         "properties": {
-          "fact_id": {"type": "string"},
-          "category": {"type": "string"},
+          "fact_id": {"type": "string", "minLength": 1},
+          "category": {"type": "string", "minLength": 1},
           "fact": {"type": "string", "minLength": 1},
-          "evidence_location": {"type": "string"},
+          "evidence_location": {"type": "string", "minLength": 1},
           "status": {"type": "string", "enum": ["active", "superseded", "resolved"]}
         }
       }
@@ -41,4 +41,3 @@
   },
   "additionalProperties": true
 }
-

@@ -42,17 +42,17 @@ def render_export(
     project_dir: Path,
     scripts: list[tuple[int, str]],
     *,
-    format_profile: str = "default-cn",
+    transport_format: str = "plain",
     xml: bool = False,
 ) -> str:
     """Merge approved/draft scripts into one export (business or XML-wrapped)."""
     parts: list[str] = []
     for episode, text in sorted(scripts):
-        report = validate_script(text, format_profile=format_profile, expected_episode=episode)
+        report = validate_script(text, format_profile="default-cn", expected_episode=episode)
         if not report["ok"]:
             raise ValueError(f"第{episode}集格式未通过，无法导出：{report['errors'][0]['message']}")
-        body = business_format(text, format_profile)
-        if xml and format_profile != "legacy-scriptitem":
+        body = business_format(text)
+        if xml or transport_format == "legacy-scriptitem":
             body = wrap_xml(body, f"EP{episode:03d}")
         parts.append(body.strip())
     return "\n\n".join(parts) + "\n"
@@ -81,4 +81,3 @@ def render_project_brief_markdown(config: dict) -> str:
     if config.get("pending_confirmation"):
         lines.extend(["", "待确认事项：", *[f"- {x}" for x in config["pending_confirmation"]]])
     return "\n".join(lines) + "\n"
-

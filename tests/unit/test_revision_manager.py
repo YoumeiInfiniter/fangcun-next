@@ -51,8 +51,11 @@ class RevisionManagerTests(unittest.TestCase):
     def test_reject_does_not_propagate(self):
         record = create_revision(self.project_dir, episode=1, instruction="删台词")
         reject_revision(self.project_dir, record["revision_id"])
-        overrides = writer_overrides(self.project_dir)
-        self.assertFalse(any(o["revision_id"] == record["revision_id"] for o in overrides))
+        from scripts.revision_manager import list_revisions
+
+        state = list_revisions(self.project_dir, episode=1)[0]
+        self.assertEqual(state["status"], "rejected")
+        self.assertNotIn("删台词", [o.get("instruction") for o in writer_overrides(self.project_dir) if o.get("status") == "approved"])
 
     def test_list_filters_by_episode(self):
         create_revision(self.project_dir, episode=1, instruction="改台词")

@@ -153,6 +153,13 @@ def _event_excerpts(chapter_text: str, chapter: dict, event: dict, budget: int) 
     for quote in event.get("key_quotes", []) or []:
         qtext = quote.get("text", "")
         if qtext:
+            setup = quote.get("setup")
+            payoff = quote.get("payoff")
+            if quote.get("must_preserve_pairing") and setup and payoff:
+                pair = _pair_span(chapter_text, setup, payoff)
+                if pair:
+                    start = min(start, pair[0])
+                    end = max(end, pair[1])
             start, end = _expand_to_quote(chapter_text, start, end, qtext)
     excerpt_text = chapter_text[start:end]
     if len(excerpt_text) > budget:
@@ -275,12 +282,17 @@ def _retrieve(
         payoff = anchor.get("payoff")
         if not setup and not payoff:
             continue
+        # Both ends must exist; a lone end is NOT a valid pair.
+        if not setup or not payoff:
+            continue
         for ch_id in chapter_ids:
             chapter_text = chapters.get(ch_id)
             if not chapter_text:
                 continue
-            span = _pair_span(chapter_text, setup, payoff)
-            if span:
+            s1 = chapter_text.find(setup)
+            s2 = chapter_text.find(payoff)
+            if s1 >= 0 and s2 >= 0:
+                span = _snap_span(chapter_text, min(s1, s2), max(s1 + len(setup), s2 + len(payoff)))
                 meta = chapter_meta.get(ch_id, {})
                 chapter_dict = {"chapter_index": ch_id, "title": meta.get("title", ""), "file": meta.get("file", "")}
                 excerpts.append(_make_excerpt(chapter_text, chapter_dict, span[0], span[1], f"dialogue_anchor:{idx:03d}"))
@@ -395,17 +407,6 @@ def _build_coverage(
 ) -> list[dict]:
     ledger: list[dict] = []
     kept_text = "\n".join(ex.get("text", "") for ex in kept)
-    event_text = "\n".join(
-        " ".join(
-            str(v)
-            for v in [
-                str(e.get("event", "")),
-                str(e.get("result", "")),
-                *(e.get("actions", []) if isinstance(e.get("actions"), list) else []),
-            ]
-        )
-        for e in resolved_events
-    )
     adaptation_basis = outline.get("adaptation_basis", []) or []
 
     def _has_event_excerpt(eid: str) -> bool:
@@ -415,6 +416,7 @@ def _build_coverage(
         event = events_by_id.get(eid)
         resolved = event is not None
         included = resolved and _has_event_excerpt(eid)
+        degraded = bool(resolved and not (event or {}).get("source_span"))
         ledger.append(
             {
                 "anchor_type": "event",
@@ -423,6 +425,8 @@ def _build_coverage(
                 "resolved": resolved,
                 "included": included,
                 "omitted": not included,
+                "degraded": degraded,
+                "degraded_reason": "needs_reanchor" if degraded else "",
                 "reason": "" if included else ("event_not_found" if not resolved else "no_excerpt"),
             }
         )
@@ -467,21 +471,51 @@ def _build_coverage(
                 "reason": "" if included else "pair_not_in_chapter_or_budget",
             }
         )
-    for item in outline.get("must_keep", []) or []:
-        if not item:
+    for idx, item in enumerate(outline.get("must_keep", []) or []):
+        text_value = item
+        bound_event_id = None
+        bound_decision_id = None
+        if isinstance(item, dict):
+            text_value = str(item.get("text") or "")
+            bound_event_id = item.get("event_id")
+            bound_decision_id = item.get("adaptation_decision_id")
+        if not text_value:
             continue
-        has_source = item in kept_text or item in event_text
-        has_basis = any(item in str(b) for b in adaptation_basis)
+        has_source = text_value in kept_text
+        has_basis = any(text_value in str(b) for b in adaptation_basis)
+        if bound_event_id:
+            event = events_by_id.get(bound_event_id)
+            has_source = False
+            if event and event.get("source_span"):
+                span = event["source_span"]
+                has_source = any(
+                    ex.get("source_span", {}).get("start", -1) <= span.get("start", -1)
+                    and span.get("end", -1) <= ex.get("source_span", {}).get("end", -2)
+                    for ex in kept
+                )
+        if bound_decision_id:
+            has_basis = any(
+                isinstance(b, dict) and b.get("id") == bound_decision_id
+                for b in adaptation_basis
+            )
         included = has_source or has_basis
         ledger.append(
             {
                 "anchor_type": "must_keep",
-                "anchor_id": item,
+                "anchor_id": text_value,
                 "requested": True,
                 "resolved": included,
                 "included": included,
                 "omitted": not included,
-                "reason": "" if included else "no_source_or_adaptation_basis",
+                "reason": (
+                    ""
+                    if included
+                    else (
+                        "bound_event_missing_span"
+                        if bound_event_id and not has_source
+                        else "no_source_or_adaptation_basis"
+                    )
+                ),
             }
         )
     if fallback_used:

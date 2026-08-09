@@ -100,7 +100,7 @@ class Round1BypassBase(unittest.TestCase):
 
     def _outline(self, episode: int, extra_must_keep: list[str] | None = None) -> dict:
         default_must_keep = {
-            1: ["系统登场并绑定"],
+            1: ["系统登场"],
             2: ["你搁我家床底看见了？"],
             3: ["所以一定是闹鬼了。"],
         }
@@ -131,14 +131,24 @@ class Round1BypassBase(unittest.TestCase):
     def _context(self, episode: int):
         _run("get-episode-context", "--dir", str(self.project_dir), "--episode", str(episode))
 
-    def _draft(self, episode: int, text: str, *, context_hash: str | None = None, automatic: bool = False) -> str:
+    def _draft(
+        self,
+        episode: int,
+        text: str,
+        *,
+        context_hash: str | None = None,
+        rewrite_ticket: str | None = None,
+        apply_revision_ids: list[str] | None = None,
+    ) -> str:
         path = self.root / f"draft_ep{episode}.txt"
         path.write_text(text, encoding="utf-8")
         argv = ["save-draft", "--dir", str(self.project_dir), "--episode", str(episode), "--file", str(path)]
         if context_hash:
             argv += ["--context-hash", context_hash]
-        if automatic:
-            argv += ["--automatic-rewrite"]
+        if rewrite_ticket:
+            argv += ["--rewrite-ticket", rewrite_ticket]
+        for revision_id in apply_revision_ids or []:
+            argv += ["--apply-revision", revision_id]
         _run(*argv)
         version = active_version_id(self.project_dir, "script_draft", episode)
         self.assertIsNotNone(version)
@@ -203,7 +213,7 @@ class BypassHashBindingTests(Round1BypassBase):
     def test_03_draft_from_h1_cannot_be_reviewed_with_h2_context(self):
         self._full_ep1_setup()
         # Change the outline and rebuild the context (H2 replaces the pointer).
-        self._save_outlines([self._outline(1, extra_must_keep=["系统登场并绑定", "雷击错绑"])])
+        self._save_outlines([self._outline(1, extra_must_keep=["系统登场", "雷击错绑"])])
         self._context(1)
         _run("review", "--dir", str(self.project_dir), "--episode", "1", expect=1)
 
@@ -392,7 +402,7 @@ class BypassRetrievalTests(Round1BypassBase):
         self._init()
         self._novel()
         self._events()
-        outline = self._outline(1, extra_must_keep=["系统登场并绑定"])
+        outline = self._outline(1, extra_must_keep=["系统登场"])
         outline["dialogue_anchors"] = [
             {"setup": "吃得苦中苦，你就能得到……", "payoff": "吃不完的苦。", "source": "第1章"}
         ]
@@ -526,12 +536,17 @@ class BypassRevisionTests(Round1BypassBase):
         v1 = self._draft(1, "第1集：第1集\n\n1-1 家 夜 内\n人物：叶聆、996\n\n△动作。\n叶聆：什么动静？\n996：绑错惩罚对象了。\n")
         self._save_review(1, self._review_report(1))
         meta = draft_meta_record(self.project_dir, 1, v1)
-        # Simulate one automatic rewrite output (v2, automatic flag).
+        # System issues one rewrite ticket; Host Agent consumes it for v2.
+        _run("rewrite", "--dir", str(self.project_dir), "--episode", "1")
+        from scripts.rewrite_ticket import latest_issued_ticket
+
+        ticket = latest_issued_ticket(self.project_dir, 1)
+        self.assertIsNotNone(ticket)
         self._draft(
             1,
             "第1集：第1集\n\n1-1 家 夜 内\n人物：叶聆、996\n\n△新动作。\n叶聆：什么动静？\n996：重写台词。\n",
             context_hash=meta["context_hash"],
-            automatic=True,
+            rewrite_ticket=ticket["ticket_id"],
         )
         v2 = active_version_id(self.project_dir, "script_draft", 1)
         meta2 = draft_meta_record(self.project_dir, 1, v2)

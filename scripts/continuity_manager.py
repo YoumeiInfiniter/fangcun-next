@@ -27,21 +27,25 @@ from .state_store import (
 )
 
 
-DEFAULT_CONTINUITY = {
-    "version": 0,
-    "updated_from_episode": None,
-    "approved_episodes": [],
-    "facts": [],
-    "character_knowledge": {},
-    "character_states": {},
-    "relationship_states": {},
-    "open_hooks": [],
-    "resolved_hooks": [],
-    "props": {},
-    "locations": {},
-    "writer_overrides": [],
-    "notes_for_future": [],
-}
+def _fresh_continuity() -> dict:
+    """Create a brand-new continuity object; never share nested containers."""
+    return {
+        "version": 0,
+        "updated_from_episode": None,
+        "approved_episodes": [],
+        "facts": [],
+        "character_knowledge": {},
+        "character_states": {},
+        "relationship_states": {},
+        "open_hooks": [],
+        "resolved_hooks": [],
+        "props": {},
+        "locations": {},
+        "writer_overrides": [],
+        "notes_for_future": [],
+        "episode_extraction": {},
+        "degraded_episodes": [],
+    }
 
 
 def extract_deterministic(episode: int, script_text: str) -> dict:
@@ -110,6 +114,10 @@ def _delta_dir(project_dir: Path) -> Path:
     return project_dir / "state" / "continuity_deltas"
 
 
+def _delta_pointer_path(project_dir: Path, episode: int, script_hash: str) -> Path:
+    return _delta_dir(project_dir) / f"current_EP{episode:03d}_{script_hash[:8]}.json"
+
+
 def save_continuity_delta(
     project_dir: Path,
     *,
@@ -127,24 +135,51 @@ def save_continuity_delta(
     delta_content["episode"] = episode
     delta_content["draft_version"] = draft_version
     delta_content["script_hash"] = script_hash
-    content_hash = sha256_text(__import__("json").dumps(delta_content, ensure_ascii=False, sort_keys=True))
+    from .common import canonical_json
+
+    content_hash = sha256_text(canonical_json(delta_content) + "\n")
     path = _delta_dir(project_dir) / f"delta_EP{episode:03d}_{script_hash[:8]}_{content_hash[:8]}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        return path
     from .common import atomic_write_json
 
+    current = _load_delta(project_dir, episode, script_hash)
+    if current is not None and current.get("_content_hash") == content_hash:
+        return path
     atomic_write_json(path, delta_content)
+    atomic_write_json(
+        _delta_pointer_path(project_dir, episode, script_hash),
+        {
+            "episode": episode,
+            "approved_version": draft_version,
+            "script_hash": script_hash,
+            "delta_path": path.name,
+            "delta_content_hash": content_hash,
+            "updated_at": now_iso(),
+        },
+    )
     return path
 
 
 def _load_delta(project_dir: Path, episode: int, script_hash: str) -> dict | None:
     from .common import read_json
+    from .common import canonical_json
 
-    matches = sorted(_delta_dir(project_dir).glob(f"delta_EP{episode:03d}_{script_hash[:8]}_*.json"))
-    if not matches:
+    pointer = read_json(_delta_pointer_path(project_dir, episode, script_hash))
+    if not isinstance(pointer, dict):
         return None
-    return read_json(matches[-1])
+    path = _delta_dir(project_dir) / (pointer.get("delta_path") or "")
+    if not path.exists():
+        return None
+    try:
+        data = read_json(path)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    data["_content_hash"] = sha256_text(canonical_json(data) + "\n")
+    if data["_content_hash"] != pointer.get("delta_content_hash"):
+        return None
+    return data
 
 
 def _delta_complete(delta: dict) -> bool:
@@ -196,7 +231,7 @@ def _merge_continuity(base: dict, extracted: dict, episode: int) -> dict:
 
 def refresh_continuity(project_dir: Path, up_to_episode: int | None = None) -> dict:
     """Rebuild continuity from all approved scripts (idempotent)."""
-    continuity = DEFAULT_CONTINUITY.copy()
+    continuity = _fresh_continuity()
     approved = []
     per_episode_extraction: dict[str, dict] = {}
     if up_to_episode is None:
@@ -215,14 +250,17 @@ def refresh_continuity(project_dir: Path, up_to_episode: int | None = None) -> d
         if delta is None:
             model_result = extract_model_assisted(project_dir, episode, script_text)
             if model_result:
-                save_continuity_delta(
-                    project_dir,
-                    episode=episode,
-                    delta=model_result,
-                    script_hash=script_hash,
-                    draft_version=draft_version,
-                )
-                delta = _load_delta(project_dir, episode, script_hash)
+                try:
+                    save_continuity_delta(
+                        project_dir,
+                        episode=episode,
+                        delta=model_result,
+                        script_hash=script_hash,
+                        draft_version=draft_version,
+                    )
+                    delta = _load_delta(project_dir, episode, script_hash)
+                except Exception:
+                    delta = None
         if delta is not None:
             mode = delta.get("extraction_mode", "host_agent")
             complete = _delta_complete(delta)
@@ -231,6 +269,8 @@ def refresh_continuity(project_dir: Path, up_to_episode: int | None = None) -> d
             mode = "deterministic"
             complete = False
             continuity = _merge_continuity(continuity, deterministic, episode)
+        if mode not in ("deterministic", "host_agent", "model_assisted"):
+            mode = "deterministic"
         per_episode_extraction[str(episode)] = {
             "mode": mode,
             "complete": complete,
@@ -242,17 +282,32 @@ def refresh_continuity(project_dir: Path, up_to_episode: int | None = None) -> d
     continuity["updated_from_episode"] = max(approved) if approved else None
     continuity["version"] = (load_continuity(project_dir).get("version", 0) or 0) + 1
     continuity["episode_extraction"] = per_episode_extraction
-    degraded = [ep for ep, info in per_episode_extraction.items() if info["mode"] == "deterministic"]
+    degraded = [
+        ep
+        for ep, info in per_episode_extraction.items()
+        if info["mode"] == "deterministic" or not info["complete"]
+    ]
     continuity["degraded_episodes"] = degraded
-    continuity["extraction_mode"] = (
-        "model_assisted" if any(i["mode"] != "deterministic" for i in per_episode_extraction.values())
-        else "deterministic"
-    )
+    modes = {info["mode"] for info in per_episode_extraction.values()}
+    if not modes:
+        continuity["extraction_mode"] = "deterministic"
+    elif modes == {"deterministic"}:
+        continuity["extraction_mode"] = "deterministic"
+    elif modes == {"host_agent"}:
+        continuity["extraction_mode"] = "host_agent"
+    elif modes == {"model_assisted"}:
+        continuity["extraction_mode"] = "model_assisted"
+    else:
+        continuity["extraction_mode"] = "mixed"
     continuity["writer_overrides"] = [
         {"revision_id": r.get("revision_id"), "instruction": r.get("instruction"), "episode": r.get("episode"), "status": r.get("status")}
         for r in writer_overrides(project_dir)
     ]
     continuity["updated_at"] = now_iso()
+    if not continuity.get("episode_extraction"):
+        continuity["episode_extraction"] = {}
+    if not continuity.get("degraded_episodes"):
+        continuity["degraded_episodes"] = []
     ensure_valid(continuity, "continuity-state.schema.json")
     save_continuity(project_dir, continuity)
     return continuity
@@ -298,10 +353,12 @@ def apply_approved_script(project_dir: Path, episode: int, script_text: str, sou
     """Register an approved script and refresh continuity from all approvals."""
     from .script_validator import validate_script
     from .common import sha256_text
+    from .format_renderer import business_format
 
     config = load_config(project_dir)
-    format_profile = config.get("script_format", "default-cn")
-    report = validate_script(script_text, format_profile=format_profile, expected_episode=episode)
+    if "<scriptItem" in script_text:
+        script_text = business_format(script_text, "legacy-scriptitem")
+    report = validate_script(script_text, format_profile="default-cn", expected_episode=episode)
     if not report["ok"]:
         raise ValueError("定稿格式未通过：" + report["errors"][0]["message"])
     script_hash = sha256_text(script_text)

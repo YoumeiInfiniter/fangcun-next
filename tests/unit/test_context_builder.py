@@ -74,7 +74,7 @@ OUTLINES = [
         "source_chapters": [1],
         "opening_bridge": "谢淮舟提出录完节目离婚",
         "episode_goal": "建立系统规则",
-        "must_keep": ["系统登场并绑定", "雷击错绑"],
+        "must_keep": ["谢淮舟提出录完节目离婚", "雷击错绑"],
         "causal_chains": [["系统登场", "雷击错绑"]],
         "knowledge_at_start": {"叶聆": ["准备退休"]},
         "knowledge_at_end": {"谢淮舟": ["能听见系统"]},
@@ -181,28 +181,24 @@ class ContextBuilderTests(unittest.TestCase):
         self.assertEqual(context["previous_episode_hook"], "996承认绑错惩罚对象")
 
     def test_writer_overrides_are_applied(self):
-        append_writer_override(
+        from scripts.revision_manager import approve_revision, create_revision
+
+        local = create_revision(
             self.project_dir,
-            {
-                "revision_id": "REV-1",
-                "episode": 1,
-                "source": "cli",
-                "instruction": "保留顺口溜",
-                "status": "approved",
-                "affects_future": False,
-            },
+            episode=1,
+            instruction="保留顺口溜",
+            source="cli",
+            affects_future=False,
+            direct_writer_instruction=True,
         )
-        append_writer_override(
+        future = create_revision(
             self.project_dir,
-            {
-                "revision_id": "REV-2",
-                "episode": 1,
-                "source": "cli",
-                "instruction": "未来集沿用新设定",
-                "status": "approved",
-                "affects_future": True,
-                "scope": "future_episodes",
-            },
+            episode=1,
+            instruction="未来集沿用新设定",
+            source="cli",
+            affects_future=True,
+            scope="future_episodes",
+            direct_writer_instruction=True,
         )
         context = build_episode_context(self.project_dir, 2)
         instructions = [o["instruction"] for o in context["writer_overrides"]]

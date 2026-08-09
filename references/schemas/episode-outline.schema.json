@@ -22,7 +22,11 @@
     "source_chapters": {"type": "array", "items": {"type": "integer"}, "minItems": 1},
     "opening_bridge": {"type": "string"},
     "episode_goal": {"type": "string", "minLength": 1},
-    "must_keep": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+    "must_keep": {
+      "type": "array",
+      "items": {"type": ["string", "object"]},
+      "minItems": 1
+    },
     "causal_chains": {
       "type": "array",
       "items": {
@@ -51,8 +55,7 @@
     "suggested_seconds": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
     "writer_notes": {"type": "array", "items": {"type": "string"}},
     "episode_function": {"type": "array", "items": {"type": "string"}},
-    "adaptation_basis": {"type": "array", "items": {"type": "string"}}
+    "adaptation_basis": {"type": "array", "items": {"type": ["string", "object"]}}
   },
   "additionalProperties": true
 }
-

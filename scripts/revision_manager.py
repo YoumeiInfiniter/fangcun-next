@@ -120,55 +120,112 @@ def _update_status(project_dir: Path, revision_id: str, status: str) -> dict | N
 
 
 def approve_revision(project_dir: Path, revision_id: str) -> dict | None:
-    return _update_status(project_dir, revision_id, "approved")
+    return transition_revision(project_dir, revision_id, "approved", reason="writer approved", operator="cli")
 
 
 def reject_revision(project_dir: Path, revision_id: str) -> dict | None:
-    return _update_status(project_dir, revision_id, "rejected")
+    return transition_revision(project_dir, revision_id, "rejected", reason="writer rejected", operator="cli")
+
+
+def revoke_revision(project_dir: Path, revision_id: str, reason: str = "") -> dict | None:
+    return transition_revision(project_dir, revision_id, "revoked", reason=reason or "writer revoked", operator="cli")
 
 
 def list_revisions(project_dir: Path, episode: int | None = None) -> list[dict]:
+    """Current-state projection of the revision event log (single source of truth)."""
     records = _revisions(project_dir)
+    latest_by_id: dict[str, dict] = {}
+    for record in records:
+        latest_by_id[record.get("revision_id")] = record
+    records = list(latest_by_id.values())
     if episode is not None:
         records = [r for r in records if r.get("episode") == episode]
     return records
+
+
+def transition_revision(
+    project_dir: Path,
+    revision_id: str,
+    new_status: str,
+    *,
+    reason: str = "",
+    operator: str = "cli",
+) -> dict | None:
+    """Append a state-transition event; current state is the last event."""
+    current = _revision_state(project_dir, revision_id)
+    if current is None:
+        return None
+    record = {
+        "revision_id": revision_id,
+        "episode": current.get("episode"),
+        "source": current.get("source"),
+        "requested_by": current.get("requested_by", "writer"),
+        "instruction": current.get("instruction"),
+        "scope": current.get("scope", "local_episode"),
+        "affects_future": current.get("affects_future", False),
+        "status": new_status,
+        "previous_status": current.get("status"),
+        "reason": reason,
+        "operator": operator,
+        "applied_to": current.get("applied_to"),
+        "created_at": current.get("created_at"),
+        "updated_at": now_iso(),
+    }
+    _append_revision(project_dir, record)
+    # Derived override stream (never the source of truth for context).
+    append_writer_override(
+        project_dir,
+        {
+            "revision_id": revision_id,
+            "episode": record["episode"],
+            "source": record["source"],
+            "requested_by": record["requested_by"],
+            "instruction": record["instruction"],
+            "scope": record["scope"],
+            "affects_future": record["affects_future"],
+            "status": new_status,
+            "applied_to": record.get("applied_to"),
+            "created_at": record["created_at"],
+        },
+    )
+    return record
+
+
+def _revision_state(project_dir: Path, revision_id: str) -> dict | None:
+    records = [r for r in _revisions(project_dir) if r.get("revision_id") == revision_id]
+    return records[-1] if records else None
 
 
 def mark_revisions_applied(
     project_dir: Path,
     *,
     episode: int,
+    revision_ids: list[str],
     applied_to_kind: str,
     applied_to_version: str,
 ) -> int:
-    """Mark approved revisions of this episode as applied to a concrete version."""
-    path = project_dir / "state" / "revisions.jsonl"
-    records = _revisions(project_dir)
+    """Bind ONLY explicitly listed approved revisions to a concrete version."""
     changed = 0
-    for record in records:
-        if record.get("episode") == episode and record.get("status") == "approved":
-            record["status"] = "applied"
-            record["applied_to"] = {"kind": applied_to_kind, "version": applied_to_version}
-            record["updated_at"] = now_iso()
-            changed += 1
-            append_writer_override(
-                project_dir,
-                {
-                    "revision_id": record["revision_id"],
-                    "episode": record["episode"],
-                    "source": record["source"],
-                    "requested_by": record.get("requested_by", "writer"),
-                    "instruction": record["instruction"],
-                    "scope": record.get("scope", "local_episode"),
-                    "affects_future": record.get("affects_future", False),
-                    "status": "applied",
-                    "applied_to": record["applied_to"],
-                    "created_at": record["created_at"],
-                },
-            )
-    if changed:
+    for revision_id in revision_ids:
+        state = _revision_state(project_dir, revision_id)
+        if state is None or state.get("episode") != episode:
+            continue
+        if state.get("status") != "approved":
+            continue
+        transition_revision(
+            project_dir,
+            revision_id,
+            "applied",
+            reason=f"bound to {applied_to_kind} {applied_to_version}",
+            operator="cli",
+        )
+        # Preserve the applied_to binding on the applied event.
+        records = _revisions(project_dir)
+        records[-1]["applied_to"] = {"kind": applied_to_kind, "version": applied_to_version}
+        path = project_dir / "state" / "revisions.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", encoding="utf-8") as fh:
             for record in records:
                 fh.write(__import__("json").dumps(record, ensure_ascii=False) + "\n")
+        changed += 1
     return changed

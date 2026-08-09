@@ -33,7 +33,7 @@
   "context_hash": "与上下文一致",
   "draft_hash": "与审核绑定一致",
   "draft_version": "v001",
-  "verdict": "pass | warning | blocked",
+  "verdict": "可填建议值；保存后由系统按 issues 唯一推导，原始值仅记录为 model_verdict",
   "summary": "一句话结论",
   "issues": [
     {

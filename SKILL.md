@@ -47,13 +47,14 @@ description: |
 | 故事大纲 | `generate-story-outline` → `save-story-outline --file <outline.md>` |
 | 集纲 | `generate-episode-outline` → `save-episode-outline --outline-json <episodes.json>` |
 | 写第N集 | `get-episode-context --episode N` → 读上下文包 → `save-draft --episode N --file <draft.txt>` |
-| 审核 | `review --episode N` → 读审核包 → `save-review --episode N --file <review.json>` |
-| 定向重写 | `rewrite --episode N` → 读重写包 → `save-draft --episode N --file <draft2.txt>` → 重新审核 |
+| 审核 | `review --episode N` → 读审核包 → `save-review --episode N --file <review.json>`（verdict 由系统按 issues 推导） |
+| 定向重写 | `rewrite --episode N` → 读重写包（含一次性 ticket）→ `save-draft --episode N --file <draft2.txt> --rewrite-ticket <ticket>` → 重新审核 |
 | 编剧定稿 | `approve --episode N --file <approved.txt>` |
 | 修改意见 | `apply-revision --episode N --instruction "..."` |
-| 查看/处理修改意见 | `list-revisions`、`approve-revision --revision-id`、`reject-revision --revision-id`、`revision-status` |
+| 查看/处理修改意见 | `list-revisions`、`approve-revision --revision-id`、`reject-revision --revision-id`、`revoke-revision --revision-id`、`revision-status` |
 | 连续性 | `refresh-continuity --dir <project>` |
 | 连续性提取（Host Agent） | `extract-continuity --episode N` → `save-continuity-delta --episode N --file <delta.json>` |
+| 恢复历史版本 | `activate-version --kind <kind> [--episode N] --version vNNN` |
 | 时长预估 | `forecast-duration --dir <project>` |
 | 进度 | `status --dir <project>` |
 | 导出 | `export --dir <project> [--xml]` |
@@ -92,9 +93,15 @@ API 模式：在 `review` / `rewrite` 后加 `--api`，由配置的模型执行�
   `degraded_episodes` 中显式列出；不允许把格式校验或本地裁决冒充系统模型审核。
 - 审核报告必须显式携带 `context_hash`、`draft_hash`、`draft_version`，缺任一拒绝保存，
   不允许自动补齐；草稿绑定生成它的上下文快照，重写只能消费审核报告实际绑定的草稿版本。
+- 审核 verdict 只由归一化后的有效 issues 推导（error→blocked / warning→warning / 其余→pass）；
+  模型输入的 verdict 只记录为 `model_verdict`；非法 issue（非对象/空 problem/非法 severity）拒绝整份报告。
 - 审核的 error 级问题必须有可在绑定 `episode_context` 中验证的结构化证据
   （`evidence_type: source|adaptation`）；任意字符串或不存在的事件/章节/span/quote
-  引用拒绝保存，无证据 error 不自动降级。
+  引用拒绝保存，无证据 error 不自动降级；证据的所有字段必须指向同一个摘录。
+- 自动重写由系统签发一次性 rewrite ticket 管理（API 与 Host Agent 同一套来源与次数门禁）；
+  消耗 ticket 的草稿标记 `origin=automatic_rewrite`，再次自动重写被拒绝，人工保存后可重新获得一次。
+- 内部剧本一律为 `default-cn` 业务正文；`<scriptItem>` 只由 export/Renderer 包装，
+  旧 XML 导入会先确定性解包再保存。
 - 上下文缺少原文证据且无改编依据时硬阻断，让编剧决定，不允许模型自由补写。
 
 ## 安全边界

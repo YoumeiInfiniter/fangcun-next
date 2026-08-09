@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .common import atomic_write_json, ensure_dir, stable_hash, sha256_file
+from .common import atomic_write_json, canonical_json, ensure_dir, stable_hash
 from .source_retriever import retrieve_source_evidence, source_evidence_complete
 from .state_store import (
     active_artifact_path,
@@ -34,7 +34,7 @@ def context_dir(project_dir: Path) -> Path:
 
 
 def snapshot_path(project_dir: Path, episode: int, context_hash: str) -> Path:
-    return context_dir(project_dir) / f"episode_context_EP{episode:03d}_{context_hash[:8]}.json"
+    return context_dir(project_dir) / f"episode_context_EP{episode:03d}_{context_hash}.json"
 
 
 def current_pointer_path(project_dir: Path, episode: int) -> Path:
@@ -57,6 +57,7 @@ def find_context_snapshot(project_dir: Path, episode: int, context_hash: str) ->
     expected = snapshot_path(project_dir, episode, context_hash)
     if expected.exists():
         return expected
+    # Legacy 8-char-prefix snapshots from round 1.
     matches = sorted(context_dir(project_dir).glob(f"episode_context_EP{episode:03d}_*.json"))
     for path in matches:
         from .common import read_json
@@ -75,16 +76,13 @@ def previous_hook_from_continuity(continuity: dict, episode: int) -> str | None:
 
 
 def _applicable_overrides(project_dir: Path, episode: int) -> list[dict]:
-    records = writer_overrides(project_dir)
+    from .revision_manager import list_revisions
+
+    # Single source of truth: current state projected from the revision log.
+    records = list_revisions(project_dir)
     applicable = []
-    latest_by_id: dict[str, dict] = {}
     for record in records:
-        rid = record.get("revision_id")
-        if rid:
-            latest_by_id[rid] = record
-    records = list(latest_by_id.values())
-    for record in records:
-        if record.get("status") in ("pending", "rejected"):
+        if record.get("status") in ("pending", "rejected", "revoked"):
             continue
         target = record.get("episode")
         propagates = record.get("scope") in ("future_episodes", "project_wide") or bool(record.get("affects_future"))
@@ -107,11 +105,19 @@ def _must_keep_problems_from_coverage(evidence: dict) -> list[str]:
 
 
 def pending_revisions(project_dir: Path, episode: int) -> list[dict]:
-    """Pending revision requests relevant to this episode (never silent)."""
+    """Pending revisions relevant to this episode, including future-scoped ones."""
     from .revision_manager import list_revisions
 
-    records = list_revisions(project_dir, episode=episode)
-    return [r for r in records if r.get("status") == "pending"]
+    records = list_revisions(project_dir)
+    pending = []
+    for r in records:
+        if r.get("status") != "pending":
+            continue
+        target = r.get("episode")
+        propagates = r.get("scope") in ("future_episodes", "project_wide") or bool(r.get("affects_future"))
+        if target == episode or (isinstance(target, int) and target < episode and propagates) or propagates:
+            pending.append(r)
+    return pending
 
 
 def build_episode_context(
@@ -199,14 +205,17 @@ def build_episode_context(
     if save:
         path = snapshot_path(project_dir, episode, context["context_hash"])
         ensure_dir(path.parent)
-        atomic_write_json(path, context)
+        snapshot_content = {**body, "context_hash": context["context_hash"]}
+        if path.exists():
+            existing = __import__("json").loads(path.read_text(encoding="utf-8"))
+            if canonical_json(existing) != canonical_json(snapshot_content):
+                raise ContextIncompleteError(
+                    [f"context hash 路径碰撞或快照被篡改：{path}；拒绝覆盖不可变快照"]
+                )
+        else:
+            atomic_write_json(path, snapshot_content)
         context["context_file"] = str(path)
-        (path.parent / f"{path.name}.sha256").write_text(
-            sha256_file(path) + "  " + path.name + "\n", encoding="utf-8"
-        )
-        from .common import atomic_write_json as _atomic_write_json
-
-        _atomic_write_json(
+        atomic_write_json(
             current_pointer_path(project_dir, episode),
             {
                 "context_hash": context["context_hash"],
@@ -220,7 +229,7 @@ def build_episode_context(
 
 
 def verify_context_hash(context: dict) -> tuple[bool, str]:
-    """Recompute the hash over all fields except context_hash."""
+    """Recompute the hash over every semantic field (immutable snapshot)."""
     expected = context.get("context_hash", "")
     body = {
         k: v

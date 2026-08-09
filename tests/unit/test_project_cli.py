@@ -60,7 +60,7 @@ OUTLINES = [
         "source_chapters": [1],
         "opening_bridge": "谢淮舟提出离婚",
         "episode_goal": "建立系统规则",
-        "must_keep": ["系统登场并绑定", "雷击错绑"],
+        "must_keep": ["半空弹出光团", "雷击错绑"],
         "causal_chains": [["系统登场", "雷击错绑"]],
         "knowledge_at_start": {},
         "knowledge_at_end": {"谢淮舟": ["能听见系统"]},

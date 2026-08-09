@@ -87,6 +87,12 @@ def load_config(project_dir: Path) -> dict:
             merged.update(local["model_config"])
             data["model_config"] = merged
             data["_local_overrides"] = {"model_config": True}
+    if data.get("script_format") == "legacy-scriptitem":
+        data["script_format"] = "default-cn"
+        data["transport_format"] = "legacy-scriptitem"
+        data["_format_migrated"] = True
+    elif "transport_format" not in data:
+        data["transport_format"] = "plain"
     return data
 
 
@@ -187,13 +193,27 @@ def commit_artifact(
     key = artifact_key(kind, episode)
     entry = manifest["artifacts"].setdefault(key, {"active_version": None, "versions": []})
 
-    # Idempotency: identical content reuses the existing version.
+    # Logical-version idempotency: identical content AND identical input
+    # fingerprint / source / parent reuse the version; same content with a
+    # different input creates a NEW logical version.
+    meta = meta or {}
+    input_fingerprint = meta.get("input_fingerprint") or meta.get("context_hash")
     for existing in entry["versions"]:
-        if existing.get("content_hash") == content_hash:
+        existing_meta = existing.get("meta") or {}
+        existing_input = existing_meta.get("input_fingerprint") or existing_meta.get("context_hash")
+        same_input = (input_fingerprint is None) or (existing_input == input_fingerprint)
+        same_source = existing.get("source") == source
+        same_parent = (parent_version is None) or (existing.get("parent_version") == parent_version)
+        if (
+            existing.get("content_hash") == content_hash
+            and same_input
+            and same_source
+            and same_parent
+        ):
             entry["active_version"] = existing["version"]
             save_manifest(project_dir, manifest)
             versions = load_active_versions(project_dir)
-            versions[key] = existing["path"]
+            versions[key] = {"version": existing["version"], "path": existing["path"]}
             save_active_versions(project_dir, versions)
             return {
                 "version": existing["version"],
@@ -202,7 +222,16 @@ def commit_artifact(
                 "created": False,
             }
 
-    version = f"v{len(entry['versions']) + 1:03d}"
+    used_numbers = []
+    for record in entry["versions"]:
+        raw = str(record.get("version", "v000"))[1:]
+        if raw.isdigit():
+            used_numbers.append(int(raw))
+    next_number = max(used_numbers, default=0) + 1
+    version = f"v{next_number:03d}"
+    while any(r.get("version") == version for r in entry["versions"]):
+        next_number += 1
+        version = f"v{next_number:03d}"
     versions_dir = project_dir / "artifacts" / kind / "versions"
     if episode is not None:
         versions_dir = versions_dir / f"ep{episode:03d}"
@@ -234,7 +263,7 @@ def commit_artifact(
     save_manifest(project_dir, manifest)
 
     versions = load_active_versions(project_dir)
-    versions[key] = record["path"]
+    versions[key] = {"version": version, "path": record["path"]}
     save_active_versions(project_dir, versions)
     return {
         "version": version,
@@ -280,12 +309,21 @@ def active_artifact_path(project_dir: Path, kind: str, episode: int | None = Non
     key = artifact_key(kind, episode)
     versions = load_active_versions(project_dir)
     value = versions.get(key)
+    if isinstance(value, dict):
+        value = value.get("path")
     return (project_dir / value).resolve() if value else None
 
 
 def active_version_id(project_dir: Path, kind: str, episode: int | None = None) -> str | None:
     key = artifact_key(kind, episode)
-    return load_manifest(project_dir).get("artifacts", {}).get(key, {}).get("active_version")
+    manifest_active = load_manifest(project_dir).get("artifacts", {}).get(key, {}).get("active_version")
+    if manifest_active:
+        return manifest_active
+    versions = load_active_versions(project_dir)
+    value = versions.get(key)
+    if isinstance(value, dict):
+        return value.get("version")
+    return None
 
 
 def artifact_version_path(
@@ -333,6 +371,55 @@ def read_artifact_version(
 def draft_meta_record(project_dir: Path, episode: int, version: str) -> dict | None:
     record = artifact_version_record(project_dir, "script_draft", episode, version)
     return (record or {}).get("meta")
+
+
+def activate_version(
+    project_dir: Path,
+    kind: str,
+    version: str,
+    *,
+    episode: int | None = None,
+    reason: str = "",
+    operator: str = "cli",
+) -> dict:
+    """Deterministically restore a specific logical version as active."""
+    key = artifact_key(kind, episode)
+    record = artifact_version_record(project_dir, kind, episode, version)
+    if record is None:
+        raise KeyError(f"{key} 版本 {version} 不存在")
+    path = project_dir / record["path"]
+    if not path.exists():
+        raise ValueError(f"{key} 版本 {version} 文件缺失：{path}")
+    if path.suffix == ".json":
+        content = read_json(path)
+        actual_hash = sha256_text(canonical_json(content) + "\n")
+    else:
+        content = path.read_text(encoding="utf-8")
+        actual_hash = sha256_text(content)
+    if actual_hash != record.get("content_hash"):
+        raise ValueError(f"{key} 版本 {version} 文件哈希与 manifest 不一致，拒绝恢复")
+    manifest = load_manifest(project_dir)
+    entry = manifest["artifacts"].setdefault(key, {"active_version": None, "versions": []})
+    previous = entry.get("active_version")
+    entry["active_version"] = version
+    save_manifest(project_dir, manifest)
+    versions = load_active_versions(project_dir)
+    versions[key] = {"version": version, "path": record["path"]}
+    save_active_versions(project_dir, versions)
+    history = state_dir(project_dir) / "activation_history.jsonl"
+    jsonl_append(
+        history,
+        {
+            "kind": kind,
+            "episode": episode,
+            "version": version,
+            "previous_active": previous,
+            "reason": reason,
+            "operator": operator,
+            "created_at": now_iso(),
+        },
+    )
+    return {"kind": kind, "episode": episode, "version": version, "previous_active": previous}
 
 
 def artifact_versions(project_dir: Path, kind: str, episode: int | None = None) -> list[dict]:

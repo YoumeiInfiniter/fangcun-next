@@ -26,7 +26,8 @@
     "fidelity": {"type": "string", "enum": ["strict", "medium", "free"]},
     "dialogue_policy": {"type": "string", "enum": ["prefer_original", "rewrite_ok"]},
     "review_policy": {"type": "string", "enum": ["advisory_with_writer_confirmation", "advisory", "blocking"]},
-    "script_format": {"type": "string", "enum": ["default-cn", "legacy-scriptitem"]},
+    "script_format": {"type": "string", "enum": ["default-cn"]},
+    "transport_format": {"type": "string", "enum": ["plain", "legacy-scriptitem"]},
     "writer_has_final_authority": {"type": "boolean"},
     "must_keep": {"type": "array", "items": {"type": "string"}},
     "forbidden_changes": {"type": "array", "items": {"type": "string"}},
@@ -50,4 +51,3 @@
   },
   "additionalProperties": true
 }
-
