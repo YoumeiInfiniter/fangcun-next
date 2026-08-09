@@ -37,6 +37,9 @@ GENRE_ALIASES = {
     "升级": "male-progression",
     "都市异能": "urban-ability",
     "脑洞": "brainhole",
+    "现代言情": "romance",
+    "现代": "romance",
+    "娱乐圈": "romance",
 }
 
 FUNCTION_MODULES = {
