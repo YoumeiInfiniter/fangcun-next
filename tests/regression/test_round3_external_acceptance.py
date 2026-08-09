@@ -541,19 +541,35 @@ class Round3PairingTests(Round1BypassBase):
         outline["dialogue_anchors"] = [{"setup": setup, "payoff": payoff, "source": "第1章"}]
         return outline
 
+    def _save_rejected(self, outline: dict) -> str:
+        path = self.root / "rejected-outline.json"
+        path.write_text(json.dumps({"episodes": [outline]}, ensure_ascii=False), encoding="utf-8")
+        return _run(
+            "save-episode-outline", "--dir", str(self.project_dir),
+            "--outline-json", str(path),
+            "--manual-import", "--manual-reason", "negative test fixture",
+            expect=1,
+        )
+
     def test_f1_setup_only_not_satisfied(self):
         self._init()
         self._novel()
         self._events()
-        self._save_outlines([self._anchor_outline("吃得苦中苦，你就能得到……", None)])
-        _run("get-episode-context", "--dir", str(self.project_dir), "--episode", "1", expect=1)
+        output = self._save_rejected(self._anchor_outline("吃得苦中苦，你就能得到……", None))
+        self.assertIn("Schema", output)
 
     def test_f2_payoff_only_not_satisfied(self):
         self._init()
         self._novel()
         self._events()
-        self._save_outlines([self._anchor_outline(None, "吃不完的苦")])
-        _run("get-episode-context", "--dir", str(self.project_dir), "--episode", "1", expect=1)
+        # Explicit quote anchors are valid; this legacy shape claims to be a
+        # pair and is therefore rejected instead of silently reclassified.
+        outline = self._outline(1, extra_must_keep=["系统登场"])
+        outline["dialogue_anchors"] = [{
+            "type": "pair", "setup": "", "payoff": "吃不完的苦", "source_event_id": "CH001-E01"
+        }]
+        output = self._save_rejected(outline)
+        self.assertIn("Schema", output)
 
     def test_f3_both_present_span_covers_both(self):
         self._init()
@@ -579,8 +595,8 @@ class Round3PairingTests(Round1BypassBase):
         self._events()
         outline = self._outline(1, extra_must_keep=["系统登场"])
         outline["dialogue_anchors"] = [{"setup": "第一句。", "payoff": "第二句。", "source": "跨章"}]
-        self._save_outlines([outline])
-        _run("get-episode-context", "--dir", str(self.project_dir), "--episode", "1", expect=1)
+        output = self._save_rejected(outline)
+        self.assertIn("dialogue_anchor", output)
 
 
 class Round3SourceSpanTests(Round1BypassBase):
@@ -612,8 +628,15 @@ class Round3SourceSpanTests(Round1BypassBase):
         self._events(events)
         outline = self._outline(1, extra_must_keep=["目标正文内容"])
         outline["source_event_ids"] = ["E1"]
-        self._save_outlines([outline])
-        _run("get-episode-context", "--dir", str(self.project_dir), "--episode", "1", expect=1)
+        path = self.root / "rejected-outline.json"
+        path.write_text(json.dumps({"episodes": [outline]}, ensure_ascii=False), encoding="utf-8")
+        output = _run(
+            "save-episode-outline", "--dir", str(self.project_dir),
+            "--outline-json", str(path),
+            "--manual-import", "--manual-reason", "negative test fixture",
+            expect=1,
+        )
+        self.assertTrue("must_keep" in output or "锚点" in output)
 
     def test_g4_long_title_excerpt_contains_target_body(self):
         self._init()

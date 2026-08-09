@@ -24,9 +24,18 @@ CHAPTER_HEADING = re.compile(
     r"(?:第\s*[0-9一二三四五六七八九十百千万零两]+\s*章"
     r"|序章|楔子|番外\s*[0-9一二三四五六七八九十百千万零两]*"
     r"|Chapter\s+[0-9]+"
-    r"|第\s*[0-9一二三四五六七八九十百千万零两]+\s*节"
     r")(?:[ \t:：、.\-—·]*(?P<title>.+?)?)\s*$"
     r")",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# “第N节” is ambiguous in Chinese prose (for example “第二节是体育课。”).
+# Treat it as a structural heading only when the document has no chapter-style
+# headings and contains at least two heading-looking section lines.  Sentence
+# punctuation at the end is deliberately excluded.
+SECTION_HEADING = re.compile(
+    r"^(?P<heading>第\s*[0-9一二三四五六七八九十百千万零两]+\s*节"
+    r"(?:[ \t:：、.\-—·]+(?P<title>[^。！？!?]+))?)\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -51,6 +60,10 @@ def load_chapter_index(project_dir: Path) -> dict:
 def split_chapters(text: str) -> list[dict]:
     """Split novel text into chapters by headings. Returns heading offsets."""
     matches = list(CHAPTER_HEADING.finditer(text))
+    if not matches:
+        section_matches = list(SECTION_HEADING.finditer(text))
+        if len(section_matches) >= 2:
+            matches = section_matches
     result = []
     for idx, match in enumerate(matches):
         start = match.start()

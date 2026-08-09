@@ -1,9 +1,11 @@
 """End-to-end tests for the Fangcun Next CLI."""
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from scripts.project_cli import main
 
@@ -129,12 +131,27 @@ class ProjectCliTests(unittest.TestCase):
         self.assertIsNotNone(meta)
         return {"draft_version": version, **meta}
 
+    def _save_outlines_confirmed(self, path: Path | None = None) -> None:
+        from scripts.state_store import active_version_id
+
+        self.run_cli(
+            "save-episode-outline", "--dir", str(self.project_dir),
+            "--outline-json", str(path or self.outlines),
+            "--manual-import", "--manual-reason", "unit-test writer fixture",
+        )
+        version = active_version_id(self.project_dir, "episode_outline")
+        self.run_cli(
+            "confirm-stage", "--dir", str(self.project_dir),
+            "--stage", "episode_outline", "--version", str(version),
+            "--override-reason", "unit-test writer fixture reviewed",
+        )
+
     def test_full_local_workflow(self):
         self.run_cli("init", "--dir", str(self.project_dir), "--config", str(self.config_file))
         self.run_cli("ingest-source", "--dir", str(self.project_dir), "--file", str(self.novel))
         self.run_cli("save-events", "--dir", str(self.project_dir), "--file", str(self.events))
         self.run_cli("estimate-capacity", "--dir", str(self.project_dir))
-        self.run_cli("save-episode-outline", "--dir", str(self.project_dir), "--outline-json", str(self.outlines))
+        self._save_outlines_confirmed()
         self.run_cli("get-episode-context", "--dir", str(self.project_dir), "--episode", "1")
         self.run_cli("save-draft", "--dir", str(self.project_dir), "--episode", "1", "--file", str(self.script))
 
@@ -171,7 +188,7 @@ class ProjectCliTests(unittest.TestCase):
         self.run_cli("init", "--dir", str(self.project_dir), "--config", str(self.config_file))
         self.run_cli("ingest-source", "--dir", str(self.project_dir), "--file", str(self.novel))
         self.run_cli("save-events", "--dir", str(self.project_dir), "--file", str(self.events))
-        self.run_cli("save-episode-outline", "--dir", str(self.project_dir), "--outline-json", str(self.outlines))
+        self._save_outlines_confirmed()
         self.run_cli("get-episode-context", "--dir", str(self.project_dir), "--episode", "1")
         self.run_cli("save-draft", "--dir", str(self.project_dir), "--episode", "1", "--file", str(self.script))
         binding = self._draft_binding(1)
@@ -192,7 +209,7 @@ class ProjectCliTests(unittest.TestCase):
         self.run_cli("init", "--dir", str(self.project_dir), "--config", str(self.config_file))
         self.run_cli("ingest-source", "--dir", str(self.project_dir), "--file", str(self.novel))
         self.run_cli("save-events", "--dir", str(self.project_dir), "--file", str(self.events))
-        self.run_cli("save-episode-outline", "--dir", str(self.project_dir), "--outline-json", str(self.outlines))
+        self._save_outlines_confirmed()
         self.run_cli(
             "apply-revision",
             "--dir", str(self.project_dir),
@@ -216,9 +233,11 @@ class ProjectCliTests(unittest.TestCase):
 
     def test_save_episode_outline_accepts_single_object(self):
         self.run_cli("init", "--dir", str(self.project_dir), "--config", str(self.config_file))
+        self.run_cli("ingest-source", "--dir", str(self.project_dir), "--file", str(self.novel))
+        self.run_cli("save-events", "--dir", str(self.project_dir), "--file", str(self.events))
         single = self.root / "single_outline.json"
         single.write_text(json.dumps(OUTLINES[0], ensure_ascii=False), encoding="utf-8")
-        self.run_cli("save-episode-outline", "--dir", str(self.project_dir), "--outline-json", str(single))
+        self._save_outlines_confirmed(single)
         from scripts.state_store import active_artifact_path
 
         outlines = json.loads(active_artifact_path(self.project_dir, "episode_outline").read_text(encoding="utf-8"))
@@ -226,7 +245,8 @@ class ProjectCliTests(unittest.TestCase):
 
     def test_check_api_without_config_fails_cleanly(self):
         self.run_cli("init", "--dir", str(self.project_dir), "--config", str(self.config_file))
-        self.run_cli("check-api", "--dir", str(self.project_dir), expect=1)
+        with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": ""}):
+            self.run_cli("check-api", "--dir", str(self.project_dir), expect=1)
 
     def test_check_api_with_local_deepseek_config_fails_cleanly_without_key(self):
         self.run_cli("init", "--dir", str(self.project_dir), "--config", str(self.config_file))
@@ -244,7 +264,8 @@ class ProjectCliTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        self.run_cli("check-api", "--dir", str(self.project_dir), expect=1)
+        with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": ""}):
+            self.run_cli("check-api", "--dir", str(self.project_dir), expect=1)
 
     def test_review_verdict_normalization_maps_needs_revision(self):
         from scripts.project_cli import _normalize_verdict

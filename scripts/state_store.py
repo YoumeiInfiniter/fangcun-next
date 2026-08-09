@@ -479,6 +479,49 @@ def artifact_versions(project_dir: Path, kind: str, episode: int | None = None) 
     return load_manifest(project_dir).get("artifacts", {}).get(key, {}).get("versions", [])
 
 
+def update_artifact_status(
+    project_dir: Path,
+    kind: str,
+    version: str,
+    *,
+    status: str,
+    episode: int | None = None,
+    operator: str,
+    reason: str,
+) -> dict:
+    """Change workflow status without changing immutable artifact content."""
+    allowed = {"draft", "needs_writer_confirmation", "approved", "rejected", "superseded"}
+    if status not in allowed:
+        raise ValueError(f"非法 artifact status：{status}")
+    key = artifact_key(kind, episode)
+    manifest = load_manifest(project_dir)
+    entry = manifest.get("artifacts", {}).get(key)
+    if not entry:
+        raise KeyError(f"artifact 不存在：{key}")
+    record = next((item for item in entry.get("versions", []) if item.get("version") == version), None)
+    if not record:
+        raise KeyError(f"artifact 版本不存在：{key}/{version}")
+    previous = record.get("status")
+    record["status"] = status
+    record["status_updated_at"] = now_iso()
+    record["status_operator"] = operator
+    save_manifest(project_dir, manifest)
+    jsonl_append(
+        state_dir(project_dir) / "stage_status_history.jsonl",
+        {
+            "kind": kind,
+            "episode": episode,
+            "version": version,
+            "previous_status": previous,
+            "status": status,
+            "operator": operator,
+            "reason": reason,
+            "created_at": now_iso(),
+        },
+    )
+    return {"kind": kind, "episode": episode, "version": version, "previous_status": previous, "status": status}
+
+
 def is_approved(project_dir: Path, episode: int) -> bool:
     return active_artifact_path(project_dir, "approved_script", episode) is not None
 

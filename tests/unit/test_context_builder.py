@@ -213,7 +213,7 @@ class ContextBuilderTests(unittest.TestCase):
         self.assertIn("hook", modules)
         self.assertNotIn("suspense", modules)
 
-    def test_evidence_retrieval_fallback_does_not_hard_block_with_adaptation_basis(self):
+    def test_missing_source_anchor_is_not_waived_by_unrelated_adaptation_basis(self):
         outlines = __import__("json").loads(
             (self.project_dir / "artifacts" / "episode_outline" / "episode_outlines.json").read_text(encoding="utf-8")
         )
@@ -230,9 +230,8 @@ class ContextBuilderTests(unittest.TestCase):
         path = self.project_dir / "artifacts" / "episode_outline" / "episode_outlines.json"
         path.write_text(__import__("json").dumps(outlines, ensure_ascii=False), encoding="utf-8")
         record_artifact(self.project_dir, "episode_outline", path, source="ai", status="approved")
-        context = build_episode_context(self.project_dir, 2)
-        self.assertTrue(context["source_evidence"]["retrieval_report"]["fallback_used"])
-        self.assertTrue(context["completeness"]["evidence_problems"])
+        with self.assertRaises(ContextIncompleteError):
+            build_episode_context(self.project_dir, 2)
 
 
 if __name__ == "__main__":

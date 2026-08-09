@@ -22,7 +22,8 @@ description: |
 
 ```text
 需求确认 → 原文归档与事件资产 → 容量预估(仅参考) → 改编指引
-→ 故事大纲 → 集纲(episode_contract) → 单集上下文(episode_context)
+→ AI同源审核 → 编剧确认 → 故事大纲 → AI同源审核 → 编剧确认
+→ 集纲(episode_contract) → AI同源审核 → 编剧确认 → 单集上下文(episode_context)
 → Writer → Reviewer(同源审核) → Rewriter(定向修复)
 → 编剧定稿 → 连续性更新 → 后续集数
 ```
@@ -43,9 +44,12 @@ description: |
 | 发来小说文件 | `ingest-source --dir <project> --file <novel.txt>` |
 | 提取事件 | 读取 `source/index.json` 及其章节文件，按 `references/prompts/stage_events.md` 生成 JSON，再执行 `save-events --dir <project> --file <events.json>` |
 | 容量预估 | `estimate-capacity --dir <project>` |
-| 改编指引 | `generate-adaptation` → `save-adaptation --file <strategy.md>` |
-| 故事大纲 | `generate-story-outline` → `save-story-outline --file <outline.md>` |
-| 集纲 | `generate-episode-outline` → `save-episode-outline --outline-json <episodes.json>` |
+| 改编指引 | `generate-adaptation`（记录输出的 `stage_context_hash`）→ `save-adaptation --file <strategy.md> --stage-context-hash <hash>` |
+| 故事大纲 | 上一阶段确认后：`generate-story-outline` → `save-story-outline --file <outline.md> --stage-context-hash <hash>` |
+| 集纲 | 上两阶段确认后：`generate-episode-outline` → `save-episode-outline --outline-json <episodes.json> --stage-context-hash <hash>`；可读 Markdown 自动同步 |
+| 审核阶段产物 | `review-stage --stage adaptation|story_outline|episode_outline` → 按 `stage-review.schema.json` 审核 → `save-stage-review --stage <stage> --file <review.json>` |
+| 编剧确认阶段产物 | `confirm-stage --stage <stage> --version vNNN`；只有绑定审核 pass/warning 后可确认 |
+| 编剧人工导入阶段产物 | 仅在编剧明确要求时，用对应 save 命令的 `--manual-import --manual-reason "..."`，随后仍需 `confirm-stage --override-reason "人工审核说明"` |
 | 写第N集 | `get-episode-context --episode N` → 读上下文包 → `save-draft --episode N --file <draft.txt>` |
 | 审核 | `review --episode N` → 读审核包 → `save-review --episode N --file <review.json>`（verdict 由系统按 issues 推导） |
 | 定向重写 | `rewrite --episode N` → 读重写包（含一次性 ticket）→ `save-draft --episode N --file <draft2.txt> --rewrite-ticket <ticket>` → 重新审核 |
@@ -84,6 +88,8 @@ API 模式：在 `review` / `rewrite` 后加 `--api`，由配置的模型执行�
 8. 时长与容量只是预期：口径分离、区间输出、永不阻断。
 9. 小范围修改就地处理；是否整体重做由编剧明确决定，系统不得自动回退。
 10. 不把单一剧本样本或单一类型流程变成所有题材的硬规则。
+11. 改编指引、故事大纲和集纲的 AI 产物保存后只能处于 `needs_writer_confirmation`；审核与编剧确认不可省略，未确认或上游已变化时下游命令硬阻断。
+12. 阶段输出必须携带生成时的 `stage_context_hash`；项目配置、上游版本或内容哈希变化后，旧输出拒绝保存。Agent 不得擅自使用人工导入/override 通道。
 
 ## 降级与诚实
 
@@ -103,6 +109,8 @@ API 模式：在 `review` / `rewrite` 后加 `--api`，由配置的模型执行�
 - 内部剧本一律为 `default-cn` 业务正文；`<scriptItem>` 只由 export/Renderer 包装，
   旧 XML 导入会先确定性解包再保存。
 - 上下文缺少原文证据且无改编依据时硬阻断，让编剧决定，不允许模型自由补写。
+- 原文事件的精确 `source_span` 用于证据校验，独立的 `retrieval_span` 用于提供触发—行动—反应—结果上下文；不得把一个孤立原句当成完整事件上下文。
+- `must_keep` 和台词锚点必须绑定真实事件或明确改编决策；未解析的自由文本、缺一端的问答/铺垫回收对在集纲保存时即拒绝。
 
 ## 安全边界
 

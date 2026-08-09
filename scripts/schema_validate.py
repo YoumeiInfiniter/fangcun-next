@@ -48,6 +48,41 @@ def _type_ok(value: Any, expected: str) -> bool:
 
 
 def _validate_node(value: Any, schema: dict, path: str, errors: list[str]) -> None:
+    if "const" in schema and value != schema["const"]:
+        errors.append(f"{path}: 值必须为 {schema['const']!r}")
+
+    if "oneOf" in schema:
+        branch_results: list[list[str]] = []
+        for branch in schema.get("oneOf", []):
+            branch_errors: list[str] = []
+            _validate_node(value, branch, path, branch_errors)
+            branch_results.append(branch_errors)
+        matched = sum(1 for branch_errors in branch_results if not branch_errors)
+        if matched != 1:
+            errors.append(f"{path}: 必须且只能满足 oneOf 中的一个结构（实际匹配 {matched} 个）")
+            if matched == 0 and branch_results:
+                shortest = min(branch_results, key=len)
+                errors.extend(shortest[:3])
+            return
+
+    if "anyOf" in schema:
+        matched = False
+        branch_results: list[list[str]] = []
+        for branch in schema.get("anyOf", []):
+            branch_errors: list[str] = []
+            _validate_node(value, branch, path, branch_errors)
+            branch_results.append(branch_errors)
+            if not branch_errors:
+                matched = True
+        if not matched:
+            errors.append(f"{path}: 至少满足 anyOf 中的一个结构")
+            if branch_results:
+                errors.extend(min(branch_results, key=len)[:3])
+
+    if "allOf" in schema:
+        for branch in schema.get("allOf", []):
+            _validate_node(value, branch, path, errors)
+
     expected_type = schema.get("type")
     if expected_type is not None:
         if isinstance(expected_type, list):
@@ -63,11 +98,15 @@ def _validate_node(value: Any, schema: dict, path: str, errors: list[str]) -> No
         for required in schema.get("required", []):
             if required not in value:
                 errors.append(f"{path}: 缺少必填字段 {required}")
-        if schema.get("additionalProperties") is False:
+        additional = schema.get("additionalProperties")
+        if additional is False:
             allowed = set(properties)
             for key in value:
                 if key not in allowed:
                     errors.append(f"{path}: 不允许的字段 {key}")
+        elif isinstance(additional, dict):
+            for key in set(value) - set(properties):
+                _validate_node(value[key], additional, f"{path}.{key}" if path else key, errors)
         for key, sub in properties.items():
             if key in value:
                 _validate_node(value[key], sub, f"{path}.{key}" if path else key, errors)
@@ -77,6 +116,11 @@ def _validate_node(value: Any, schema: dict, path: str, errors: list[str]) -> No
         min_items = schema.get("minItems")
         if min_items is not None and len(value) < min_items:
             errors.append(f"{path}: 至少需要 {min_items} 项")
+        max_items = schema.get("maxItems")
+        if max_items is not None and len(value) > max_items:
+            errors.append(f"{path}: 最多允许 {max_items} 项")
+        if schema.get("uniqueItems") and len({json.dumps(item, ensure_ascii=False, sort_keys=True) for item in value}) != len(value):
+            errors.append(f"{path}: 数组项必须唯一")
         if isinstance(items, dict):
             for idx, item in enumerate(value):
                 _validate_node(item, items, f"{path}[{idx}]", errors)

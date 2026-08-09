@@ -159,7 +159,8 @@ def cmd_ingest_source(args) -> int:
 
 def cmd_save_events(args) -> int:
     project_dir = _project_dir(args)
-    from .source_ingest import read_chapter
+    from .source_ingest import read_all_chapters, read_chapter
+    from .source_retriever import enrich_event_retrieval_spans
 
     data = _load_json_file(Path(args.file), "事件资产")
     events = data.get("events", data) if isinstance(data, dict) else data
@@ -208,6 +209,7 @@ def cmd_save_events(args) -> int:
                 # degraded data and can never resolve to a precise excerpt.
                 event["needs_reanchor"] = True
                 event.pop("source_excerpt_hash", None)
+    enrich_event_retrieval_spans(events, read_all_chapters(project_dir))
     result = commit_artifact(
         project_dir,
         "source_events",
@@ -229,13 +231,14 @@ def cmd_estimate_capacity(args) -> int:
     return 0
 
 
-def _stage_bundle(project_dir: Path, role: str, extra: str = "") -> Path:
+def _stage_bundle(project_dir: Path, role: str, stage_context: dict, extra: str = "") -> Path:
     from .prompt_router import render_prompt_bundle
 
     config = load_config(project_dir)
     context = {
         "episode": 0,
-        "context_hash": f"stage:{role}",
+        "context_hash": stage_context["context_hash"],
+        "context_file": stage_context.get("context_file", ""),
         "project_brief": config,
         "episode_outline": {},
         "source_evidence": {"chapter_ids": [], "events": [], "quotes": [], "raw_excerpts": []},
@@ -247,6 +250,12 @@ def _stage_bundle(project_dir: Path, role: str, extra: str = "") -> Path:
         "advisory_timing": {},
     }
     bundle = render_prompt_bundle(context, role=role, config=config)
+    bundle += (
+        "\n\n## 阶段输入绑定（保存时必须原样提交）\n"
+        f"stage: {role}\n"
+        f"stage_context_hash: {stage_context['context_hash']}\n"
+        f"upstream_bindings: {json.dumps(stage_context.get('upstream_bindings', []), ensure_ascii=False)}\n"
+    )
     if extra:
         bundle += "\n\n## 上游产物\n" + extra
     path = project_dir / "state" / "prompt_bundles" / f"stage_{role}.md"
@@ -264,43 +273,113 @@ def _require_artifact_text(project_dir: Path, kind: str, label: str) -> str:
 
 def cmd_generate_adaptation(args) -> int:
     project_dir = _project_dir(args)
-    events = _require_artifact_text(project_dir, "source_events", "原文事件资产")
+    from .stage_lifecycle import build_stage_context, compact_event_catalog
+
+    events_path = active_artifact_path(project_dir, "source_events")
+    if not events_path:
+        raise CliError("缺少前置产物：原文事件资产（未找到 source_events）")
+    events = read_json(events_path)
+    context = build_stage_context(project_dir, "adaptation")
     forecast_path = active_artifact_path(project_dir, "capacity_forecast")
-    extra = f"事件资产：\n{events}"
+    extra = (
+        f"完整事件资产路径（需要细节时按 event_id 定点读取）：{events_path}\n"
+        f"路由目录：\n{json.dumps(compact_event_catalog(events), ensure_ascii=False)}"
+    )
     if forecast_path and forecast_path.exists():
         extra += f"\n\n容量预估：\n{forecast_path.read_text(encoding='utf-8')}"
-    _print_bundle(_stage_bundle(project_dir, "adaptation", extra))
+    _print_bundle(_stage_bundle(project_dir, "adaptation", context, extra))
     return 0
 
 
 def cmd_generate_story_outline(args) -> int:
     project_dir = _project_dir(args)
+    from .stage_lifecycle import build_stage_context, compact_event_catalog
+
+    context = build_stage_context(project_dir, "story_outline")
     adaptation = _require_artifact_text(project_dir, "adaptation_strategy", "改编指引")
-    events = _require_artifact_text(project_dir, "source_events", "原文事件资产")
-    _print_bundle(_stage_bundle(project_dir, "story_outline", f"改编指引：\n{adaptation}\n\n事件资产：\n{events}"))
+    events_path = active_artifact_path(project_dir, "source_events")
+    if not events_path:
+        raise CliError("缺少前置产物：原文事件资产")
+    events = read_json(events_path)
+    extra = (
+        f"已确认改编指引：\n{adaptation}\n\n"
+        f"完整事件资产路径：{events_path}\n"
+        f"事件路由目录：\n{json.dumps(compact_event_catalog(events), ensure_ascii=False)}"
+    )
+    _print_bundle(_stage_bundle(project_dir, "story_outline", context, extra))
     return 0
 
 
 def cmd_generate_episode_outline(args) -> int:
     project_dir = _project_dir(args)
+    from .stage_lifecycle import build_stage_context, compact_event_catalog
+
+    context = build_stage_context(project_dir, "episode_outline")
+    adaptation_text = _require_artifact_text(project_dir, "adaptation_strategy", "改编指引")
     outline_text = _require_artifact_text(project_dir, "story_outline", "故事大纲")
-    events = _require_artifact_text(project_dir, "source_events", "原文事件资产")
-    _print_bundle(_stage_bundle(project_dir, "episode_outline", f"故事大纲：\n{outline_text}\n\n事件资产：\n{events}"))
+    events_path = active_artifact_path(project_dir, "source_events")
+    if not events_path:
+        raise CliError("缺少前置产物：原文事件资产")
+    events = read_json(events_path)
+    from .entity_registry import canonical_characters
+
+    extra = (
+        f"已确认改编指引（集纲不得绕过其删改边界）：\n{adaptation_text}\n\n"
+        f"已确认故事大纲：\n{outline_text}\n\n"
+        f"规范角色名：{json.dumps(canonical_characters(events), ensure_ascii=False)}\n"
+        f"完整事件资产路径：{events_path}\n"
+        f"事件路由目录：\n{json.dumps(compact_event_catalog(events), ensure_ascii=False)}"
+    )
+    _print_bundle(_stage_bundle(project_dir, "episode_outline", context, extra))
     return 0
 
 
-def _save_stage_text(project_dir: Path, kind: str, file: Path, summary_file: str | None, summary_schema: str) -> None:
+def _save_stage_text(
+    project_dir: Path,
+    kind: str,
+    file: Path,
+    summary_file: str | None,
+    summary_schema: str,
+    *,
+    stage_context_hash: str | None,
+    manual_import: bool,
+    manual_reason: str,
+) -> None:
     file = Path(file).expanduser().resolve()
     if not file.exists():
         raise CliError(f"产物文件不存在：{file}")
-    result = commit_artifact(
-        project_dir,
-        kind,
-        content=file.read_text(encoding="utf-8"),
-        source="ai",
-        status="approved",
-        ext=file.suffix.lstrip(".") or "md",
-    )
+    stage = {"adaptation_strategy": "adaptation", "story_outline": "story_outline"}[kind]
+    content = file.read_text(encoding="utf-8")
+    events_path = active_artifact_path(project_dir, "source_events")
+    events = read_json(events_path) if events_path else []
+    from .entity_registry import validate_entity_names
+
+    entity_problems = validate_entity_names(content, events if isinstance(events, list) else [], load_config(project_dir).get("entity_aliases"))
+    if entity_problems:
+        raise CliError("角色实体校验失败：\n" + "\n".join(f"- {p}" for p in entity_problems))
+    if stage_context_hash:
+        from .stage_lifecycle import load_stage_context, save_stage_artifact
+
+        stage_context = load_stage_context(project_dir, stage, stage_context_hash)
+        result = save_stage_artifact(
+            project_dir,
+            stage=stage,
+            content=content,
+            stage_context=stage_context,
+            ext=file.suffix.lstrip(".") or "md",
+        )
+    else:
+        if not manual_import or not manual_reason.strip():
+            raise CliError("缺少 --stage-context-hash；只有编剧明确人工导入时可使用 --manual-import --manual-reason")
+        result = commit_artifact(
+            project_dir,
+            kind,
+            content=content,
+            source="writer",
+            status="needs_writer_confirmation",
+            ext=file.suffix.lstrip(".") or "md",
+            meta={"manual_import": True, "manual_reason": manual_reason.strip()},
+        )
     print(f"{kind} 已保存：{result['path']}（{result['version']}）")
     if summary_file:
         summary = _load_json_file(Path(summary_file), "结构化摘要")
@@ -314,22 +393,33 @@ def _save_stage_text(project_dir: Path, kind: str, file: Path, summary_file: str
             project_dir,
             summary_kind,
             content=summary,
-            source="ai",
-            status="approved",
+            source="ai" if stage_context_hash else "writer",
+            status="needs_writer_confirmation",
             ext="json",
+            meta={"parent_stage_version": result["version"]},
         )
         print(f"{kind} 摘要已保存：{summary_result['path']}（{summary_result['version']}）")
 
 
 def cmd_save_adaptation(args) -> int:
     project_dir = _project_dir(args)
-    _save_stage_text(project_dir, "adaptation_strategy", Path(args.file), args.summary_file, None)
+    _save_stage_text(
+        project_dir, "adaptation_strategy", Path(args.file), args.summary_file, None,
+        stage_context_hash=args.stage_context_hash,
+        manual_import=args.manual_import,
+        manual_reason=args.manual_reason,
+    )
     return 0
 
 
 def cmd_save_story_outline(args) -> int:
     project_dir = _project_dir(args)
-    _save_stage_text(project_dir, "story_outline", Path(args.file), args.summary_file, None)
+    _save_stage_text(
+        project_dir, "story_outline", Path(args.file), args.summary_file, None,
+        stage_context_hash=args.stage_context_hash,
+        manual_import=args.manual_import,
+        manual_reason=args.manual_reason,
+    )
     return 0
 
 
@@ -342,6 +432,17 @@ def cmd_save_episode_outline(args) -> int:
         episodes = data.get("episodes", data) if isinstance(data, dict) else data
     if not isinstance(episodes, list) or not episodes:
         raise CliError("集纲必须是数组或含 episodes 数组的对象")
+    events_path = active_artifact_path(project_dir, "source_events")
+    events_data = read_json(events_path) if events_path else []
+    events = events_data.get("events", events_data) if isinstance(events_data, dict) else events_data
+    events = events if isinstance(events, list) else []
+    events_by_id = {str(item.get("event_id")): item for item in events if isinstance(item, dict)}
+    from .common import canonical_json
+    from .entity_registry import validate_entity_names
+    from .source_ingest import read_all_chapters
+
+    chapter_texts = read_all_chapters(project_dir)
+
     seen: set[int] = set()
     for outline in episodes:
         ep = outline.get("episode")
@@ -352,7 +453,90 @@ def cmd_save_episode_outline(args) -> int:
             ensure_valid(outline, "episode-outline.schema.json")
         except SchemaValidationError as exc:
             raise CliError(f"第{ep}集未通过 Schema：\n" + "\n".join(exc.messages))
-    from .common import canonical_json
+        missing_events = [eid for eid in outline.get("source_event_ids", []) or [] if eid not in events_by_id]
+        if missing_events:
+            raise CliError(f"第{ep}集引用不存在的 source_event_ids：{', '.join(missing_events)}")
+        selected_ids = set(outline.get("source_event_ids", []) or [])
+        selected_chapters = {
+            int(chapter)
+            for chapter in outline.get("source_chapters", []) or []
+        }
+        selected_chapters.update(
+            int(events_by_id[eid]["chapter_id"])
+            for eid in selected_ids
+            if eid in events_by_id and isinstance(events_by_id[eid].get("chapter_id"), int)
+        )
+        searchable = canonical_json([events_by_id[eid] for eid in selected_ids if eid in events_by_id])
+        searchable += "\n" + "\n".join(chapter_texts.get(chapter, "") for chapter in sorted(selected_chapters))
+        decision_ids = {
+            str(item.get("id"))
+            for item in outline.get("adaptation_basis", []) or []
+            if isinstance(item, dict) and item.get("id")
+        }
+        for item in outline.get("must_keep", []) or []:
+            if isinstance(item, str):
+                if item not in searchable:
+                    raise CliError(
+                        f"第{ep}集 must_keep「{item}」没有绑定 event_id/adaptation_decision_id，"
+                        "且无法在本集引用事件中解析"
+                    )
+                continue
+            event_id = item.get("event_id")
+            decision_id = item.get("adaptation_decision_id")
+            if not event_id and not decision_id:
+                raise CliError(f"第{ep}集 must_keep「{item.get('text')}」缺少依据绑定")
+            if event_id and (event_id not in events_by_id or event_id not in selected_ids):
+                raise CliError(f"第{ep}集 must_keep 引用的 event_id {event_id} 不属于本集有效事件")
+            if decision_id and decision_id not in decision_ids:
+                raise CliError(f"第{ep}集 must_keep 引用的 adaptation_decision_id {decision_id} 不存在")
+        for anchor in outline.get("dialogue_anchors", []) or []:
+            source_event_id = anchor.get("source_event_id") or anchor.get("source")
+            if source_event_id not in events_by_id and not anchor.get("source_event_id"):
+                # Deterministic migration for the old {setup,payoff,source}
+                # shape: bind it to the sole selected event whose chapter
+                # actually contains the quoted unit.  Ambiguity is rejected.
+                parts = [str(anchor.get(key) or "") for key in ("setup", "payoff") if anchor.get(key)]
+                candidates = []
+                for event_id in selected_ids:
+                    event = events_by_id.get(event_id) or {}
+                    chapter_text = chapter_texts.get(event.get("chapter_id"), "")
+                    if parts and all(part in chapter_text for part in parts):
+                        candidates.append(event_id)
+                if len(candidates) == 1:
+                    source_event_id = candidates[0]
+                    if anchor.get("setup"):
+                        anchor.clear()
+                        anchor.update({
+                            "type": "pair",
+                            "setup": parts[0],
+                            "payoff": parts[-1],
+                            "source_event_id": source_event_id,
+                        })
+                    else:
+                        quote = str(anchor.get("payoff") or "")
+                        anchor.clear()
+                        anchor.update({"type": "quote", "quote": quote, "source_event_id": source_event_id})
+            if source_event_id not in events_by_id or source_event_id not in selected_ids:
+                raise CliError(f"第{ep}集 dialogue_anchor 引用的事件 {source_event_id} 不属于本集有效事件")
+        entity_problems = validate_entity_names(canonical_json(outline), events, load_config(project_dir).get("entity_aliases"))
+        if entity_problems:
+            raise CliError(f"第{ep}集角色实体校验失败：\n" + "\n".join(f"- {p}" for p in entity_problems))
+        from .source_retriever import retrieve_source_evidence
+
+        evidence = retrieve_source_evidence(project_dir, outline, events)
+        unresolved = [
+            item
+            for item in evidence.get("coverage", []) or []
+            if item.get("requested")
+            and item.get("omitted")
+            and item.get("anchor_type") in ("event", "chapter", "dialogue_anchor", "must_keep")
+        ]
+        if unresolved:
+            details = "；".join(
+                f"{item.get('anchor_type')}:{item.get('anchor_id')}({item.get('reason')})"
+                for item in unresolved
+            )
+            raise CliError(f"第{ep}集锚点在实际原文检索中无法满足：{details}")
 
     existing_path = active_artifact_path(project_dir, "episode_outline")
     existing: dict[int, dict] = {}
@@ -389,27 +573,65 @@ def cmd_save_episode_outline(args) -> int:
         "total_episodes": len(merged),
     }
     ordered = [merged[ep] for ep in sorted(merged)]
-    result = commit_artifact(
+    from .stage_lifecycle import episode_density_report
+    from .format_renderer import render_episode_outline_markdown
+
+    density_reports = [
+        {"episode": int(outline["episode"]), **episode_density_report(outline, events_by_id)}
+        for outline in ordered
+    ]
+    outline_sync_id = sha256_text(canonical_json({"episodes": ordered}))
+    shared_meta = {
+        "merge_report": merge_report,
+        "outline_sync_id": outline_sync_id,
+        "density_reports": density_reports,
+    }
+    if args.stage_context_hash:
+        from .stage_lifecycle import load_stage_context, save_stage_artifact
+
+        stage_context = load_stage_context(project_dir, "episode_outline", args.stage_context_hash)
+        result = save_stage_artifact(
+            project_dir,
+            stage="episode_outline",
+            content={"episodes": ordered},
+            stage_context=stage_context,
+            ext="json",
+            extra_meta=shared_meta,
+        )
+        lifecycle_meta = dict((artifact_version_record(
+            project_dir, "episode_outline", None, result["version"]
+        ) or {}).get("meta") or {})
+    else:
+        if not args.manual_import or not args.manual_reason.strip():
+            raise CliError("缺少 --stage-context-hash；只有编剧明确人工导入时可使用 --manual-import --manual-reason")
+        lifecycle_meta = {
+            **shared_meta,
+            "manual_import": True,
+            "manual_reason": args.manual_reason.strip(),
+        }
+        artifact_source = "writer"
+        result = commit_artifact(
+            project_dir,
+            "episode_outline",
+            content={"episodes": ordered},
+            source=artifact_source,
+            status="needs_writer_confirmation",
+            ext="json",
+            meta=lifecycle_meta,
+        )
+    md_result = commit_artifact(
         project_dir,
-        "episode_outline",
-        content={"episodes": ordered},
-        source="ai",
-        status="approved",
-        ext="json",
-        meta={"merge_report": merge_report},
+        "episode_outline_md",
+        content=render_episode_outline_markdown(ordered, density_reports),
+        source="system",
+        status="needs_writer_confirmation",
+        ext="md",
+        meta={**lifecycle_meta, "json_outline_version": result["version"]},
     )
     if args.outline_md:
-        md_path = Path(args.outline_md).expanduser().resolve()
-        if md_path.exists():
-            commit_artifact(
-                project_dir,
-                "episode_outline_md",
-                content=md_path.read_text(encoding="utf-8"),
-                source="ai",
-                status="approved",
-                ext="md",
-            )
+        print("提示：--outline-md 已弃用；可读版现在始终由集纲 JSON 自动生成，避免版本漂移。")
     print(f"集纲已保存：{result['path']}（{result['version']}，共 {len(merged)} 集）")
+    print(f"同步可读版：{md_result['path']}（sync={outline_sync_id[:12]}）")
     print(f"合并报告：{json.dumps(merge_report, ensure_ascii=False)}")
     return 0
 
@@ -418,7 +640,9 @@ def cmd_get_episode_context(args) -> int:
     project_dir = _project_dir(args)
     from .context_builder import build_episode_context
     from .prompt_router import render_prompt_bundle
+    from .stage_lifecycle import assert_stage_artifact_confirmed
 
+    assert_stage_artifact_confirmed(project_dir, "episode_outline")
     role = args.role
     context = build_episode_context(
         project_dir,
@@ -1439,6 +1663,139 @@ def cmd_status(args) -> int:
     return 0
 
 
+def cmd_review_stage(args) -> int:
+    project_dir = _project_dir(args)
+    from .stage_lifecycle import STAGE_KINDS, load_stage_context
+
+    kind = STAGE_KINDS[args.stage]
+    version = active_version_id(project_dir, kind)
+    record = artifact_version_record(project_dir, kind, None, version) if version else None
+    path = active_artifact_path(project_dir, kind)
+    if not record or not path:
+        raise CliError(f"{args.stage} 没有待审核产物")
+    context_hash = str((record.get("meta") or {}).get("stage_context_hash") or "")
+    if not context_hash:
+        raise CliError("该产物是人工导入或旧版本，没有 stage_context_hash；请由编剧人工审核后使用 confirm-stage override")
+    context = load_stage_context(project_dir, args.stage, context_hash)
+    prompt = (Path(__file__).parents[1] / "references" / "prompts" / "stage_reviewer.md").read_text(encoding="utf-8")
+    bundle = (
+        prompt
+        + "\n\n## 审核绑定（必须原样返回）\n"
+        + f"stage: {args.stage}\n"
+        + f"stage_context_hash: {context_hash}\n"
+        + f"artifact_version: {version}\n"
+        + f"artifact_hash: {record.get('content_hash')}\n"
+        + f"upstream_bindings: {json.dumps(context.get('upstream_bindings', []), ensure_ascii=False)}\n"
+        + f"\n## 当前阶段产物\n{path.read_text(encoding='utf-8')}\n"
+    )
+    out = project_dir / "state" / "prompt_bundles" / f"review_stage_{args.stage}_{version}.md"
+    ensure_dir(out.parent)
+    out.write_text(bundle, encoding="utf-8")
+    _print_bundle(out)
+    return 0
+
+
+def cmd_save_stage_review(args) -> int:
+    project_dir = _project_dir(args)
+    from .stage_lifecycle import STAGE_KINDS, load_stage_context
+
+    data = _load_json_file(Path(args.file), "阶段审核报告")
+    if not isinstance(data, dict):
+        raise CliError("阶段审核报告必须是 JSON 对象")
+    kind = STAGE_KINDS[args.stage]
+    version = active_version_id(project_dir, kind)
+    record = artifact_version_record(project_dir, kind, None, version) if version else None
+    path = active_artifact_path(project_dir, kind)
+    if not record or not path:
+        raise CliError(f"{args.stage} 没有活动产物")
+    context_hash = str((record.get("meta") or {}).get("stage_context_hash") or "")
+    required = {
+        "stage": args.stage,
+        "stage_context_hash": context_hash,
+        "artifact_version": version,
+        "artifact_hash": record.get("content_hash"),
+    }
+    for key, expected in required.items():
+        if not data.get(key):
+            raise CliError(f"阶段审核缺少 {key}，不允许自动补齐")
+        if data.get(key) != expected:
+            raise CliError(f"阶段审核 {key} 与当前待审产物不一致")
+    context = load_stage_context(project_dir, args.stage, context_hash)
+    artifact_text = path.read_text(encoding="utf-8")
+    issues = data.get("issues")
+    if not isinstance(issues, list):
+        raise CliError("阶段审核 issues 必须是数组")
+    for issue in issues:
+        if not isinstance(issue, dict):
+            raise CliError("阶段审核 issue 必须是对象")
+        if issue.get("severity") != "error":
+            continue
+        evidence = issue.get("evidence")
+        if not isinstance(evidence, dict):
+            raise CliError(f"error issue {issue.get('id')} 缺少结构化 evidence")
+        quote = str(evidence.get("artifact_quote") or "")
+        binding_ok = any(
+            item.get("kind") == evidence.get("upstream_kind")
+            and item.get("version") == evidence.get("upstream_version")
+            and item.get("content_hash") == evidence.get("upstream_content_hash")
+            for item in context.get("upstream_bindings", []) or []
+        )
+        if not (quote and quote in artifact_text) and not binding_ok:
+            raise CliError(f"error issue {issue.get('id')} 的证据无法绑定当前产物或上游")
+    severities = {str(item.get("severity")) for item in issues if isinstance(item, dict)}
+    data["verdict"] = "blocked" if "error" in severities else "warning" if "warning" in severities else "pass"
+    try:
+        ensure_valid(data, "stage-review.schema.json")
+    except SchemaValidationError as exc:
+        raise CliError("阶段审核未通过 Schema：\n" + "\n".join(exc.messages))
+    result = commit_artifact(
+        project_dir,
+        f"stage_review_{args.stage}",
+        content=data,
+        source="ai",
+        status="approved",
+        ext="json",
+        meta={
+            "stage": args.stage,
+            "stage_context_hash": context_hash,
+            "artifact_version": version,
+            "artifact_hash": record.get("content_hash"),
+            "verdict": data["verdict"],
+        },
+    )
+    print(f"阶段审核已保存：{result['path']}（{data['verdict']}）")
+    return 0
+
+
+def cmd_confirm_stage(args) -> int:
+    project_dir = _project_dir(args)
+    from .stage_lifecycle import confirm_stage
+
+    result = confirm_stage(
+        project_dir,
+        stage=args.stage,
+        version=args.version,
+        operator=args.operator,
+        review_override_reason=args.override_reason,
+    )
+    if args.stage == "episode_outline":
+        md_version = active_version_id(project_dir, "episode_outline_md")
+        md_record = artifact_version_record(project_dir, "episode_outline_md", None, md_version) if md_version else None
+        if md_record and (md_record.get("meta") or {}).get("json_outline_version") == args.version:
+            from .state_store import update_artifact_status
+
+            update_artifact_status(
+                project_dir,
+                "episode_outline_md",
+                md_version,
+                status="approved",
+                operator=args.operator,
+                reason="paired JSON episode outline confirmed",
+            )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_activate_version(args) -> int:
     project_dir = _project_dir(args)
     from .state_store import activate_version
@@ -1569,12 +1926,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dir", required=True)
     p.add_argument("--file", required=True)
     p.add_argument("--summary-file")
+    p.add_argument("--stage-context-hash")
+    p.add_argument("--manual-import", action="store_true")
+    p.add_argument("--manual-reason", default="")
     p.set_defaults(func=cmd_save_adaptation)
 
     p = sub.add_parser("save-story-outline")
     p.add_argument("--dir", required=True)
     p.add_argument("--file", required=True)
     p.add_argument("--summary-file")
+    p.add_argument("--stage-context-hash")
+    p.add_argument("--manual-import", action="store_true")
+    p.add_argument("--manual-reason", default="")
     p.set_defaults(func=cmd_save_story_outline)
 
     p = sub.add_parser("save-episode-outline")
@@ -1582,7 +1945,29 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--outline-json", required=True)
     p.add_argument("--outline-md")
     p.add_argument("--replace", action="store_true", help="显式整表替换集纲（默认按集 upsert 并保留未出现集数）")
+    p.add_argument("--stage-context-hash")
+    p.add_argument("--manual-import", action="store_true")
+    p.add_argument("--manual-reason", default="")
     p.set_defaults(func=cmd_save_episode_outline)
+
+    p = sub.add_parser("review-stage", help="生成与当前阶段版本同源绑定的独立审核包")
+    p.add_argument("--dir", required=True)
+    p.add_argument("--stage", required=True, choices=["adaptation", "story_outline", "episode_outline"])
+    p.set_defaults(func=cmd_review_stage)
+
+    p = sub.add_parser("save-stage-review", help="保存并验证阶段审核报告")
+    p.add_argument("--dir", required=True)
+    p.add_argument("--stage", required=True, choices=["adaptation", "story_outline", "episode_outline"])
+    p.add_argument("--file", required=True)
+    p.set_defaults(func=cmd_save_stage_review)
+
+    p = sub.add_parser("confirm-stage", help="编剧确认当前已审核阶段版本")
+    p.add_argument("--dir", required=True)
+    p.add_argument("--stage", required=True, choices=["adaptation", "story_outline", "episode_outline"])
+    p.add_argument("--version", required=True)
+    p.add_argument("--operator", default="writer")
+    p.add_argument("--override-reason", default="")
+    p.set_defaults(func=cmd_confirm_stage)
 
     p = sub.add_parser("get-episode-context")
     p.add_argument("--dir", required=True)

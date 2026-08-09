@@ -16,6 +16,16 @@
       },
       "additionalProperties": false
     },
+    "retrieval_span": {
+      "type": "object",
+      "required": ["start", "end"],
+      "properties": {
+        "start": {"type": "integer", "minimum": 0},
+        "end": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    },
+    "retrieval_excerpt_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "coordinate_base": {"type": "string", "enum": ["chapter_file_content"]},
     "chapter_content_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "source_excerpt_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},

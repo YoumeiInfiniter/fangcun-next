@@ -88,6 +88,27 @@ class SchemaValidateTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertTrue(any("must_keep" in e for e in errors))
 
+    def test_episode_outline_oneof_rejects_incomplete_explicit_pair(self):
+        outline = {
+            "episode": 1,
+            "title": "t",
+            "source_event_ids": ["E1"],
+            "source_chapters": [1],
+            "opening_bridge": "b",
+            "episode_goal": "g",
+            "must_keep": [{"text": "x", "event_id": "E1"}],
+            "causal_chains": [["a", "b"]],
+            "knowledge_at_start": {},
+            "knowledge_at_end": {},
+            "dialogue_anchors": [
+                {"type": "pair", "setup": "", "payoff": "回答", "source_event_id": "E1"}
+            ],
+            "ending_hook": "h",
+        }
+        ok, errors = validate(outline, "episode-outline.schema.json")
+        self.assertFalse(ok)
+        self.assertTrue(any("oneOf" in error or "setup" in error for error in errors))
+
     def test_review_report_enforces_severity_enum(self):
         report = {
             "episode": 1,
@@ -111,4 +132,3 @@ class SchemaValidateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

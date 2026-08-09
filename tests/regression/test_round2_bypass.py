@@ -643,19 +643,29 @@ class Round2EvidenceTests(Round1BypassBase):
         outline["dialogue_anchors"] = [{"setup": setup, "payoff": payoff, "source": "第1章"}]
         return outline
 
+    def _save_outlines_rejected(self, outlines: list[dict]) -> str:
+        path = self.root / "rejected-outlines.json"
+        path.write_text(json.dumps(outlines, ensure_ascii=False), encoding="utf-8")
+        return _run(
+            "save-episode-outline", "--dir", str(self.project_dir),
+            "--outline-json", str(path),
+            "--manual-import", "--manual-reason", "negative test fixture",
+            expect=1,
+        )
+
     def test_r2_31_setup_missing_payoff_only_anchor_omitted(self):
         self._init()
         self._novel()
         self._events()
-        self._save_outlines([self._outline_with_anchor("不存在的话", "吃不完的苦")])
-        _run("get-episode-context", "--dir", str(self.project_dir), "--episode", "1", expect=1)
+        output = self._save_outlines_rejected([self._outline_with_anchor("不存在的话", "吃不完的苦")])
+        self.assertIn("dialogue_anchor", output)
 
     def test_r2_32_payoff_missing_setup_only_anchor_omitted(self):
         self._init()
         self._novel()
         self._events()
-        self._save_outlines([self._outline_with_anchor("吃得苦中苦，你就能得到……", "不存在的话")])
-        _run("get-episode-context", "--dir", str(self.project_dir), "--episode", "1", expect=1)
+        output = self._save_outlines_rejected([self._outline_with_anchor("吃得苦中苦，你就能得到……", "不存在的话")])
+        self.assertIn("dialogue_anchor", output)
 
     def test_r2_33_both_ends_present_kept_at_low_budget(self):
         self._init()
@@ -688,8 +698,8 @@ class Round2EvidenceTests(Round1BypassBase):
         self._init()
         self._novel()
         self._events()
-        self._save_outlines([self._outline(1, extra_must_keep=["系统登场并绑定"])])
-        _run("get-episode-context", "--dir", str(self.project_dir), "--episode", "1", expect=1)
+        output = self._save_outlines_rejected([self._outline(1, extra_must_keep=["系统登场并绑定"])])
+        self.assertIn("must_keep", output)
 
     def test_r2_36_event_without_span_marked_degraded(self):
         self._init()
@@ -718,8 +728,8 @@ class Round2EvidenceTests(Round1BypassBase):
         invalid = self._outline(1, extra_must_keep=["系统登场"])
         invalid["must_keep"] = [{"text": "编剧新增的高光保留项", "adaptation_decision_id": "D-NOPE"}]
         invalid["adaptation_basis"] = [{"id": "D1", "text": "保留编剧新增高光"}]
-        self._save_outlines([invalid])
-        _run("get-episode-context", "--dir", str(self.project_dir), "--episode", "1", expect=1)
+        output = self._save_outlines_rejected([invalid])
+        self.assertIn("adaptation_decision_id", output)
 
 
 class Round2RevisionTests(Round1BypassBase):

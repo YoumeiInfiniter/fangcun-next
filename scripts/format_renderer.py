@@ -80,4 +80,62 @@ def render_project_brief_markdown(config: dict) -> str:
         lines.extend(["", "编剧禁止改动：", *[f"- {x}" for x in config["forbidden_changes"]]])
     if config.get("pending_confirmation"):
         lines.extend(["", "待确认事项：", *[f"- {x}" for x in config["pending_confirmation"]]])
+    if config.get("content_distribution_notes"):
+        lines.extend(["", "内容分配偏好：", *[f"- {x}" for x in config["content_distribution_notes"]]])
+    if config.get("episode_timing_overrides"):
+        lines.extend(["", "局部集数时长/内容权重："])
+        for item in config["episode_timing_overrides"]:
+            lines.append(
+                f"- EP{item.get('start_episode')}–EP{item.get('end_episode')}："
+                f"{item.get('preferred_seconds') or '沿用全局区间'} / {item.get('content_weight', 'normal')}"
+                f"；{item.get('note', '')}"
+            )
+    if config.get("planning_checkpoints"):
+        lines.extend(["", "编剧指定剧情检查点："])
+        for item in config["planning_checkpoints"]:
+            lines.append(f"- EP{item.get('episode')}：{item.get('expectation')}")
     return "\n".join(lines) + "\n"
+
+
+def render_episode_outline_markdown(episodes: list[dict], density_reports: list[dict] | None = None) -> str:
+    """Render the JSON source of truth into an always-synchronized writer view."""
+    reports = {int(item.get("episode", 0)): item for item in (density_reports or [])}
+    lines = ["# 分集纲要", ""]
+    for outline in sorted(episodes, key=lambda item: int(item.get("episode", 0))):
+        episode = int(outline.get("episode", 0))
+        lines.extend(
+            [
+                f"## 第{episode}集：{outline.get('title', '')}",
+                "",
+                f"- 本集目标：{outline.get('episode_goal', '')}",
+                f"- 开场承接：{outline.get('opening_bridge', '')}",
+                f"- 集末钩子：{outline.get('ending_hook', '')}",
+                f"- 原文事件：{', '.join(outline.get('source_event_ids', []) or []) or '改编决策驱动'}",
+                f"- 原文章节：{', '.join(str(x) for x in (outline.get('source_chapters', []) or [])) or '无'}",
+            ]
+        )
+        if outline.get("suggested_seconds"):
+            seconds = outline["suggested_seconds"]
+            lines.append(f"- 建议时长：{seconds[0]}–{seconds[-1]} 秒（仅供编剧判断）")
+        report = reports.get(episode)
+        if report:
+            lines.append(
+                f"- 容量压力：{report.get('pressure')}（事件最低 {report.get('minimum_event_seconds')} 秒，"
+                f"偏好 {report.get('preferred_event_seconds')} 秒；不作硬门禁）"
+            )
+        lines.extend(["", "必保留："])
+        for item in outline.get("must_keep", []) or []:
+            text = item.get("text") if isinstance(item, dict) else item
+            lines.append(f"- {text}")
+        lines.extend(["", "因果链："])
+        for chain in outline.get("causal_chains", []) or []:
+            lines.append("- " + " → ".join(str(part) for part in chain))
+        if outline.get("dialogue_anchors"):
+            lines.extend(["", "台词锚点："])
+            for anchor in outline["dialogue_anchors"]:
+                if anchor.get("type") == "quote":
+                    lines.append(f"- 原句：{anchor.get('quote')}")
+                else:
+                    lines.append(f"- {anchor.get('setup') or ''} → {anchor.get('payoff') or ''}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"

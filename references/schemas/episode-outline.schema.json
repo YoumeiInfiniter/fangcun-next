@@ -55,12 +55,39 @@
     "dialogue_anchors": {
       "type": "array",
       "items": {
-        "type": "object",
-        "properties": {
-          "setup": {"type": ["string", "null"]},
-          "payoff": {"type": ["string", "null"]},
-          "source": {"type": "string"}
-        }
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["type", "quote", "source_event_id"],
+            "properties": {
+              "type": {"const": "quote"},
+              "quote": {"type": "string", "minLength": 1},
+              "source_event_id": {"type": "string", "minLength": 1}
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": ["type", "setup", "payoff", "source_event_id"],
+            "properties": {
+              "type": {"const": "pair"},
+              "setup": {"type": "string", "minLength": 1},
+              "payoff": {"type": "string", "minLength": 1},
+              "source_event_id": {"type": "string", "minLength": 1}
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": ["payoff", "source"],
+            "properties": {
+              "setup": {"type": ["string", "null"]},
+              "payoff": {"type": "string", "minLength": 1},
+              "source": {"type": "string", "minLength": 1}
+            },
+            "additionalProperties": false
+          }
+        ]
       }
     },
     "allowed_compression": {"type": "array", "items": {"type": "string"}},

@@ -18,6 +18,7 @@ from .state_store import (
     artifact_versions,
     load_continuity,
     load_config,
+    resolve_active,
     writer_overrides,
 )
 from .prompt_router import select_craft_modules
@@ -147,12 +148,22 @@ def build_episode_context(
     )
     evidence_problems = source_evidence_complete(evidence)
     adaptation_basis = outline.get("adaptation_basis", []) or []
+    has_source_request = bool(
+        outline.get("source_event_ids")
+        or outline.get("source_chapters")
+        or outline.get("dialogue_anchors")
+    )
     must_keep_problems = _must_keep_problems_from_coverage(evidence)
-    all_problems = evidence_problems + must_keep_problems
-    if all_problems and not adaptation_basis:
-        raise ContextIncompleteError(all_problems)
-    if must_keep_problems:
-        raise ContextIncompleteError(must_keep_problems)
+    # A genuinely adaptation-only episode may have no source request, but its
+    # must_keep items must still bind to explicit adaptation decision IDs.
+    all_problems = (
+        evidence_problems if has_source_request or not adaptation_basis else []
+    ) + must_keep_problems
+    # Adaptation decisions are valid only for the must_keep item explicitly
+    # bound to that decision.  They can never waive an unrelated missing
+    # source event, chapter, dialogue quote or setup/payoff pair.
+    if all_problems:
+        raise ContextIncompleteError(list(dict.fromkeys(all_problems)))
 
     continuity = load_continuity(project_dir)
     previous_script = None
@@ -182,6 +193,9 @@ def build_episode_context(
         "context_versions": {
             "episode_outline_version": active_version_id(project_dir, "episode_outline"),
             "source_events_version": active_version_id(project_dir, "source_events"),
+            "adaptation_strategy": _active_binding(project_dir, "adaptation_strategy"),
+            "story_outline": _active_binding(project_dir, "story_outline"),
+            "episode_outline": _active_binding(project_dir, "episode_outline"),
         },
         "source_evidence": evidence,
         "previous_approved_script": previous_script,
@@ -280,8 +294,12 @@ def _load_summary(project_dir: Path, kind: str) -> dict:
     if summary_kind:
         summary_path = active_artifact_path(project_dir, summary_kind)
         if summary_path and summary_path.exists():
-            data = read_json(summary_path)
-            return data if isinstance(data, dict) else {}
+            summary_resolved = resolve_active(project_dir, summary_kind)
+            stage_resolved = resolve_active(project_dir, kind)
+            summary_meta = (summary_resolved or {}).get("record", {}).get("meta") or {}
+            if stage_resolved and summary_meta.get("parent_stage_version") == stage_resolved.get("version"):
+                data = read_json(summary_path)
+                return data if isinstance(data, dict) else {}
     path = active_artifact_path(project_dir, kind)
     if not path or not path.exists():
         return {}
@@ -295,3 +313,14 @@ def _load_summary(project_dir: Path, kind: str) -> dict:
         data = read_json(summary_path)
         return data if isinstance(data, dict) else {}
     return {"source_file": str(path)}
+
+
+def _active_binding(project_dir: Path, kind: str) -> dict | None:
+    resolved = resolve_active(project_dir, kind)
+    if not resolved:
+        return None
+    return {
+        "version": resolved["version"],
+        "content_hash": resolved["record"].get("content_hash"),
+        "status": resolved["record"].get("status"),
+    }

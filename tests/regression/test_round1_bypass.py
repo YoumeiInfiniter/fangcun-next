@@ -124,9 +124,16 @@ class Round1BypassBase(unittest.TestCase):
         path = self.root / "outlines.json"
         path.write_text(json.dumps(outlines, ensure_ascii=False), encoding="utf-8")
         argv = ["save-episode-outline", "--dir", str(self.project_dir), "--outline-json", str(path)]
+        argv += ["--manual-import", "--manual-reason", "round1 synthetic writer fixture"]
         if replace:
             argv.append("--replace")
         _run(*argv)
+        version = active_version_id(self.project_dir, "episode_outline")
+        _run(
+            "confirm-stage", "--dir", str(self.project_dir),
+            "--stage", "episode_outline", "--version", str(version),
+            "--override-reason", "round1 synthetic writer fixture reviewed",
+        )
 
     def _context(self, episode: int):
         _run("get-episode-context", "--dir", str(self.project_dir), "--episode", str(episode))

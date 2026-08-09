@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Bound Creative Stage Review",
+  "type": "object",
+  "required": ["stage", "stage_context_hash", "artifact_version", "artifact_hash", "verdict", "summary", "issues"],
+  "properties": {
+    "stage": {"enum": ["adaptation", "story_outline", "episode_outline"]},
+    "stage_context_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "artifact_version": {"type": "string", "pattern": "^v[0-9]{3,}$"},
+    "artifact_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "verdict": {"enum": ["pass", "warning", "blocked"]},
+    "summary": {"type": "string", "minLength": 1},
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "severity", "category", "problem"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "severity": {"enum": ["error", "warning", "suggestion"]},
+          "category": {
+            "enum": ["source_fidelity", "requirements", "causality", "character", "capacity", "traceability", "continuity", "format", "other"]
+          },
+          "location": {"type": "string"},
+          "problem": {"type": "string", "minLength": 1},
+          "fix": {"type": "string"},
+          "evidence": {
+            "type": "object",
+            "properties": {
+              "artifact_quote": {"type": "string", "minLength": 1},
+              "upstream_kind": {"type": "string", "minLength": 1},
+              "upstream_version": {"type": "string", "minLength": 1},
+              "upstream_content_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

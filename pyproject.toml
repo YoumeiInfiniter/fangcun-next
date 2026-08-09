@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fangcun-next"
-version = "0.1.0"
+version = "0.2.0"
 description = "Fangcun Next: novel-to-short-drama screenplay skill runtime (agent-agnostic)"
 requires-python = ">=3.10"
 dependencies = ["requests>=2.31,<3"]

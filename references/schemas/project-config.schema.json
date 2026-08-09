@@ -32,6 +32,43 @@
     "must_keep": {"type": "array", "items": {"type": "string"}},
     "forbidden_changes": {"type": "array", "items": {"type": "string"}},
     "pending_confirmation": {"type": "array", "items": {"type": "string"}},
+    "content_distribution_notes": {"type": "array", "items": {"type": "string"}},
+    "episode_timing_overrides": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["start_episode", "end_episode"],
+        "properties": {
+          "start_episode": {"type": "integer", "minimum": 1},
+          "end_episode": {"type": "integer", "minimum": 1},
+          "preferred_seconds": {"type": "array", "items": {"type": "integer", "minimum": 1}, "minItems": 2, "maxItems": 2},
+          "content_weight": {"enum": ["light", "normal", "heavy"]},
+          "note": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "planning_checkpoints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["episode", "expectation"],
+        "properties": {
+          "episode": {"type": "integer", "minimum": 1},
+          "expectation": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": false
+      }
+    },
+    "entity_aliases": {
+      "type": "object",
+      "additionalProperties": {
+        "oneOf": [
+          {"type": "string"},
+          {"type": "array", "items": {"type": "string"}}
+        ]
+      }
+    },
     "model_config": {
       "type": "object",
       "properties": {

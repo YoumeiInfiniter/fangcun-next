@@ -109,7 +109,7 @@ def check_private_isolation(files: list[Path]) -> list[str]:
     return problems
 
 
-def build_package(out_path: Path, *, version: str = "0.1.0") -> Path:
+def build_package(out_path: Path, *, version: str = "0.2.0") -> Path:
     """Build dist/<name>-<version>.zip plus release_manifest.json."""
     root = skill_root()
     files = iter_package_files(root)

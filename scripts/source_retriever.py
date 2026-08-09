@@ -17,6 +17,7 @@ retrieval is retried with a higher budget before reporting omission.
 
 from __future__ import annotations
 
+from copy import deepcopy
 import re
 
 from .common import sha256_text
@@ -45,15 +46,63 @@ def _snap_span(text: str, start: int, end: int) -> tuple[int, int]:
     spans = _sentence_spans(text)
     snapped_start = start
     snapped_end = end
+    start_set = False
     for s, e in spans:
-        if e > start and snapped_start == start:
+        if e > start and not start_set:
             snapped_start = s
+            start_set = True
         if e >= end:
             snapped_end = e
             break
     if snapped_end < end and spans:
         snapped_end = spans[-1][1]
     return snapped_start, snapped_end
+
+
+def enrich_event_retrieval_spans(events: list[dict], chapters: dict[int, str]) -> list[dict]:
+    """Attach a rich retrieval span without weakening the exact evidence span.
+
+    Models often anchor ``source_span`` to the shortest verifiable quote.  That
+    is useful for integrity checks but too small for screenplay writing.  For
+    every chapter, partition the chapter around the ordered exact anchors so
+    each event receives surrounding trigger/action/reaction/result context.
+    The exact source span and hash remain untouched.
+    """
+    grouped: dict[int, list[dict]] = {}
+    for event in events:
+        chapter_id = event.get("chapter_id")
+        span = event.get("source_span") or {}
+        if (
+            isinstance(chapter_id, int)
+            and chapter_id in chapters
+            and isinstance(span, dict)
+            and isinstance(span.get("start"), int)
+            and isinstance(span.get("end"), int)
+            and 0 <= span["start"] < span["end"] <= len(chapters[chapter_id])
+        ):
+            grouped.setdefault(chapter_id, []).append(event)
+
+    for chapter_id, chapter_events in grouped.items():
+        text = chapters[chapter_id]
+        ordered = sorted(
+            chapter_events,
+            key=lambda item: (item["source_span"]["start"], item["source_span"]["end"]),
+        )
+        boundaries = [0]
+        for left, right in zip(ordered, ordered[1:]):
+            left_end = int(left["source_span"]["end"])
+            right_start = int(right["source_span"]["start"])
+            boundaries.append(max(left_end, (left_end + right_start) // 2))
+        boundaries.append(len(text))
+        for index, event in enumerate(ordered):
+            start, end = _snap_span(text, boundaries[index], boundaries[index + 1])
+            exact = event["source_span"]
+            start = min(start, exact["start"])
+            end = max(end, exact["end"])
+            excerpt = text[start:end]
+            event["retrieval_span"] = {"start": start, "end": end}
+            event["retrieval_excerpt_hash"] = sha256_text(excerpt)
+    return events
 
 
 def _expand_to_quote(text: str, start: int, end: int, quote: str) -> tuple[int, int]:
@@ -110,7 +159,7 @@ def _keywords_from(outline: dict, events: list[dict]) -> list[str]:
             if isinstance(quote.get("text"), str) and len(quote["text"]) >= 2:
                 keywords.append(quote["text"])
     for anchor in outline.get("dialogue_anchors", []) or []:
-        for part in (anchor.get("setup"), anchor.get("payoff")):
+        for part in (anchor.get("quote"), anchor.get("setup"), anchor.get("payoff")):
             if isinstance(part, str) and len(part) >= 2:
                 keywords.append(part)
     seen: set[str] = set()
@@ -176,7 +225,20 @@ def _event_excerpts(
         return [], True, "needs_reanchor"
     if event.get("source_quote") and str(event.get("source_quote")) not in exact_excerpt:
         return [], True, "needs_reanchor"
-    start, end = _snap_span(chapter_text, start, end)
+    retrieval_span = event.get("retrieval_span") or {}
+    if (
+        isinstance(retrieval_span, dict)
+        and isinstance(retrieval_span.get("start"), int)
+        and isinstance(retrieval_span.get("end"), int)
+        and 0 <= retrieval_span["start"] <= start < end <= retrieval_span["end"] <= len(chapter_text)
+    ):
+        retrieval_text = chapter_text[retrieval_span["start"] : retrieval_span["end"]]
+        retrieval_hash = event.get("retrieval_excerpt_hash")
+        if retrieval_hash and retrieval_hash != sha256_text(retrieval_text):
+            return [], True, "needs_reanchor"
+        start, end = retrieval_span["start"], retrieval_span["end"]
+    else:
+        start, end = _snap_span(chapter_text, start, end)
     for quote in event.get("key_quotes", []) or []:
         qtext = quote.get("text", "")
         if qtext:
@@ -200,24 +262,16 @@ def _event_excerpts(
                 end = max(end, pair[1])
             start, end = _expand_to_quote(chapter_text, start, end, qtext)
     excerpt_text = chapter_text[start:end]
-    if len(excerpt_text) > budget:
-        for quote in event.get("key_quotes", []) or []:
-            qtext = quote.get("text", "")
-            if qtext and len(qtext) <= budget:
-                qpos = chapter_text.find(qtext, start, end)
-                if qpos >= 0:
-                    s2, e2 = _snap_span(chapter_text, qpos, qpos + len(qtext))
-                    if e2 - s2 <= budget:
-                        start, end = s2, e2
-                        break
     if end - start > budget:
-        s3, e3 = _snap_span(chapter_text, start, start + budget)
-        if e3 - s3 > budget:
-            spans = _sentence_spans(chapter_text[start : start + budget * 2])
-            if spans:
-                e3 = start + spans[-1][1]
-            s3, e3 = _snap_span(chapter_text, start, e3)
-        start, end = s3, e3
+        exact_start = int(span["start"])
+        exact_end = int(span["end"])
+        half = max(1, (budget - (exact_end - exact_start)) // 2)
+        window_start = max(start, exact_start - half)
+        window_end = min(end, exact_end + half)
+        start, end = _snap_span(chapter_text, window_start, window_end)
+        if end - start > budget * 3 // 2:
+            start = max(0, exact_start - half)
+            end = min(len(chapter_text), start + budget)
     if end > start:
         return [_make_excerpt(chapter_text, chapter, start, end, f"event:{event.get('event_id')}")], False, ""
     return [], True, "no_excerpt"
@@ -242,6 +296,11 @@ def _retrieve(
     max_chars: int,
     per_chapter_budget: int,
 ) -> dict:
+    chapters = read_all_chapters(project_dir)
+    # Old event artifacts may predate retrieval_span.  Enrich a private copy
+    # at read time so immutable historical versions are never rewritten while
+    # every writer still receives causal context around the exact anchor.
+    events = enrich_event_retrieval_spans(deepcopy(events), chapters)
     events_by_id = _events_by_id(events)
     anchor_ids = list(outline.get("source_event_ids", []) or [])
     anchor_chapters = list(outline.get("source_chapters", []) or [])
@@ -268,7 +327,6 @@ def _retrieve(
                 if isinstance(ch, int) and ch not in anchor_chapters:
                     anchor_chapters.append(ch)
 
-    chapters = read_all_chapters(project_dir)
     chapter_meta = {
         ch.get("chapter_index"): ch
         for ch in load_chapter_index(project_dir).get("chapters", [])
@@ -332,17 +390,54 @@ def _retrieve(
     if anchor_chapters:
         used_order.append("chapters")
 
-    # Dialogue anchors: setup/payoff are indivisible units.
+    # Dialogue anchors distinguish a single reusable quote from an indivisible
+    # setup/payoff pair.  Legacy payoff-only anchors are normalized as quotes.
     for idx, anchor in enumerate(outline.get("dialogue_anchors", []) or []):
+        anchor_type = anchor.get("type")
         setup = anchor.get("setup")
         payoff = anchor.get("payoff")
-        if not setup and not payoff:
+        quote = anchor.get("quote")
+        source_event_id = anchor.get("source_event_id") or anchor.get("source")
+        if not anchor_type:
+            anchor_type = "pair" if setup else ("quote" if payoff or quote else "")
+        if anchor_type == "quote":
+            quote = quote or payoff
+            if not quote:
+                anchor_fail_reasons[idx] = "missing_quote"
+                continue
+            event = events_by_id.get(source_event_id)
+            candidate_chapters = [event.get("chapter_id")] if event else list(chapter_ids)
+            for ch_id in candidate_chapters:
+                chapter_text = chapters.get(ch_id)
+                if not chapter_text:
+                    continue
+                pos = chapter_text.find(quote)
+                if pos < 0:
+                    continue
+                span = _snap_span(chapter_text, pos, pos + len(quote))
+                meta = chapter_meta.get(ch_id, {})
+                chapter_dict = {
+                    "chapter_index": ch_id,
+                    "title": meta.get("title", ""),
+                    "file": meta.get("file", ""),
+                    "content_hash": meta.get("content_hash", ""),
+                }
+                excerpts.append(
+                    _make_excerpt(chapter_text, chapter_dict, span[0], span[1], f"dialogue_anchor:{idx:03d}")
+                )
+                break
+            else:
+                anchor_fail_reasons[idx] = "quote_not_in_source_event"
+            continue
+        if anchor_type != "pair" or (not setup and not payoff):
             continue
         # Both ends must exist; a lone end is NOT a valid pair.
         if not setup or not payoff:
             anchor_fail_reasons[idx] = "missing_setup" if not setup else "missing_payoff"
             continue
-        for ch_id in chapter_ids:
+        event = events_by_id.get(source_event_id)
+        candidate_chapters = [event.get("chapter_id")] if event else list(chapter_ids)
+        for ch_id in candidate_chapters:
             chapter_text = chapters.get(ch_id)
             if not chapter_text:
                 continue
@@ -362,7 +457,10 @@ def _retrieve(
         else:
             anchor_fail_reasons[idx] = "pair_not_in_same_chapter"
 
-    if len(excerpts) < len(anchor_ids) + len(anchor_chapters) or not excerpts:
+    # Direct event/chapter anchors already satisfy the source request.  Do not
+    # double-count them and then search the entire novel for a repeated word.
+    # Keyword-only retrieval remains available when no direct anchor exists.
+    if not excerpts or (not anchor_ids and not anchor_chapters):
         keyword_events = list(resolved_events)
         for eid in anchor_ids:
             event = events_by_id.get(eid)
@@ -370,8 +468,10 @@ def _retrieve(
                 keyword_events.append(event)
         keywords = _keywords_from(outline, keyword_events)
         for kw in keywords:
-            for ch_id, chapter_text in chapters.items():
-                if ch_id in chapter_ids and excerpts:
+            search_ids = chapter_ids or list(chapters)
+            for ch_id in search_ids:
+                chapter_text = chapters.get(ch_id)
+                if chapter_text is None:
                     continue
                 meta = chapter_meta.get(ch_id, {})
                 chapter_dict = {
@@ -410,23 +510,36 @@ def _retrieve(
                 if ch_id not in chapter_ids:
                     chapter_ids.append(ch_id)
 
-    def _priority(ex: dict) -> tuple[int, int]:
+    def _priority(ex: dict) -> tuple[int, int, int]:
+        reason = str(ex.get("reason", ""))
+        reason_priority = 0 if reason.startswith("event:") else 1 if reason.startswith("dialogue_anchor:") else 2
         event_id = str(ex.get("reason", "")).replace("event:", "")
         importance = 1
         for event in resolved_events:
             if event.get("event_id") == event_id:
                 importance = 0 if event.get("importance") == "mainline" else 1
-        return (importance, ex["source_span"]["start"])
+        return (reason_priority, importance, ex["source_span"]["start"])
 
     excerpts.sort(key=_priority)
     kept: list[dict] = []
     total = 0
     truncated = False
+    required_budget_overflow = False
     for ex in excerpts:
         text = ex.get("text", "")
         if total + len(text) > max_chars:
             truncated = True
-            continue
+            reason = str(ex.get("reason", ""))
+            required = (
+                (reason.startswith("event:") and reason.removeprefix("event:") in anchor_ids)
+                or reason.startswith("dialogue_anchor:")
+                or (ex.get("chapter_id") in anchor_chapters and not any(k.get("chapter_id") == ex.get("chapter_id") for k in kept))
+            )
+            if not required:
+                continue
+            # A configured character budget is an optimization, never
+            # permission to silently drop an explicit contract anchor.
+            required_budget_overflow = True
         kept.append(ex)
         total += len(text)
 
@@ -461,6 +574,7 @@ def _retrieve(
             "order_used": used_order,
             "fallback_used": fallback_used,
             "truncated": truncated,
+            "required_budget_overflow": required_budget_overflow,
             "total_excerpt_chars": total,
             "degraded_events": sorted(degraded_event_ids),
         },
@@ -538,14 +652,14 @@ def _build_coverage(
             }
         )
     for idx, anchor in enumerate(outline.get("dialogue_anchors", []) or []):
-        if not (anchor.get("setup") or anchor.get("payoff")):
+        if not (anchor.get("quote") or anchor.get("setup") or anchor.get("payoff")):
             continue
         included = any(ex.get("reason") == f"dialogue_anchor:{idx:03d}" for ex in kept)
         fail_reason = anchor_fail_reasons.get(idx, "" if included else "pair_not_in_chapter_or_budget")
         ledger.append(
             {
                 "anchor_type": "dialogue_anchor",
-                "anchor_id": anchor.get("source", f"anchor-{idx:03d}"),
+                "anchor_id": anchor.get("source_event_id") or anchor.get("source", f"anchor-{idx:03d}"),
                 "requested": True,
                 "resolved": included,
                 "included": included,
