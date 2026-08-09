@@ -102,4 +102,4 @@ PYTHONPATH="$PWD/skills/drama/tools" .venv/bin/python -m unittest discover -s te
 ## 8. Commit
 
 - 修复前：`6707f24`（评审基线）
-- 本轮提交：`eb59553`（Round1 fix 主提交）、`<handoff-commit>`（本交接文档提交）
+- 本轮提交：`eb59553`（Round1 fix 主提交）、`2c8e097`（本交接文档提交）
