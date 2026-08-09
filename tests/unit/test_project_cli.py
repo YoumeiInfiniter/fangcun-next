@@ -194,7 +194,16 @@ class ProjectCliTests(unittest.TestCase):
         self.assertTrue(brief.exists())
         self.assertIn("15集甜宠", brief.read_text(encoding="utf-8"))
 
+    def test_save_episode_outline_accepts_single_object(self):
+        self.run_cli("init", "--dir", str(self.project_dir), "--config", str(self.config_file))
+        single = self.root / "single_outline.json"
+        single.write_text(json.dumps(OUTLINES[0], ensure_ascii=False), encoding="utf-8")
+        self.run_cli("save-episode-outline", "--dir", str(self.project_dir), "--outline-json", str(single))
+        outlines = json.loads(
+            (self.project_dir / "artifacts" / "episode_outline" / "episode_outlines.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(len(outlines["episodes"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
-

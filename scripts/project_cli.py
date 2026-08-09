@@ -269,7 +269,10 @@ def cmd_save_story_outline(args) -> int:
 def cmd_save_episode_outline(args) -> int:
     project_dir = _project_dir(args)
     data = _load_json_file(Path(args.outline_json), "集纲 JSON")
-    episodes = data.get("episodes", data) if isinstance(data, dict) else data
+    if isinstance(data, dict) and "episode" in data and "episodes" not in data:
+        episodes = [data]
+    else:
+        episodes = data.get("episodes", data) if isinstance(data, dict) else data
     if not isinstance(episodes, list) or not episodes:
         raise CliError("集纲必须是数组或含 episodes 数组的对象")
     seen: set[int] = set()
