@@ -69,6 +69,6 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD/skills/drama/tools" .venv/bin/python 
 ## 7. Commit
 
 - 起点：`f3b5eea`（问题复现基线）；当前轮起始：`c6fc5c5`
-- 本轮提交：`<main-fix>`、`<handoff>`、`<hash-fix>`
+- 本轮提交：`a36eb3b`、`3fa918f`、`<hash-fix>`
 - 最终 HEAD：见交付消息
 
