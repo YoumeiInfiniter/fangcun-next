@@ -11,9 +11,10 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["fact", "introduced_in", "status"],
+        "required": ["fact", "episode", "status"],
         "properties": {
           "fact": {"type": "string"},
+          "episode": {"type": "integer", "minimum": 1},
           "introduced_in": {"type": "integer", "minimum": 1},
           "status": {"type": "string", "enum": ["active", "superseded", "resolved"]}
         }
@@ -32,4 +33,3 @@
   },
   "additionalProperties": true
 }
-

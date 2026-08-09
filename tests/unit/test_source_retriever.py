@@ -80,8 +80,10 @@ class SourceRetrieverTests(unittest.TestCase):
 
     def test_short_chapter_is_included_whole(self):
         evidence = retrieve_source_evidence(self.project_dir, self._outline(), self.events, max_chars=5000)
-        full = [ex for ex in evidence["raw_excerpts"] if ex["reason"] == "chapter_full"]
-        self.assertTrue(full)
+        chapter_coverage = [c for c in evidence["coverage"] if c["anchor_type"] == "chapter"]
+        self.assertTrue(chapter_coverage)
+        self.assertTrue(all(c["included"] for c in chapter_coverage))
+        self.assertTrue(any(ex["chapter_id"] == 1 for ex in evidence["raw_excerpts"]))
 
     def test_excerpts_respect_sentence_boundaries(self):
         evidence = retrieve_source_evidence(self.project_dir, self._outline(), self.events, max_chars=200)
@@ -126,11 +128,13 @@ class SourceRetrieverTests(unittest.TestCase):
         problems = source_evidence_complete({"chapter_ids": [], "events": [], "raw_excerpts": []})
         self.assertGreaterEqual(len(problems), 1)
 
-    def test_budget_keeps_mainline_and_marks_truncated(self):
+    def test_low_budget_still_keeps_required_anchors(self):
         evidence = retrieve_source_evidence(self.project_dir, self._outline(), self.events, max_chars=60)
-        self.assertTrue(evidence["retrieval_report"]["truncated"])
-        reasons = [ex["reason"] for ex in evidence["raw_excerpts"]]
-        self.assertTrue(any("event:CH001-E01" in r for r in reasons))
+        required = [c for c in evidence["coverage"] if c["anchor_type"] in ("event", "chapter")]
+        self.assertTrue(required)
+        self.assertTrue(all(c["included"] for c in required), [c for c in required if not c["included"]])
+        text = "\n".join(ex["text"] for ex in evidence["raw_excerpts"])
+        self.assertIn("吃不完的苦。", text)
 
 
 if __name__ == "__main__":

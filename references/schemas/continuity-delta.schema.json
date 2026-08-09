@@ -1,0 +1,44 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Continuity Delta",
+  "type": "object",
+  "required": ["extraction_mode"],
+  "properties": {
+    "extraction_mode": {"type": "string", "enum": ["host_agent", "model_assisted"]},
+    "facts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["fact"],
+        "properties": {
+          "fact_id": {"type": "string"},
+          "category": {"type": "string"},
+          "fact": {"type": "string", "minLength": 1},
+          "evidence_location": {"type": "string"},
+          "status": {"type": "string", "enum": ["active", "superseded", "resolved"]}
+        }
+      }
+    },
+    "character_knowledge": {"type": "object"},
+    "character_states": {"type": "object"},
+    "relationship_states": {"type": "object"},
+    "props": {"type": "object"},
+    "locations": {"type": "object"},
+    "open_hooks": {"type": "array", "items": {"type": "object"}},
+    "resolved_hooks": {"type": "array", "items": {"type": "object"}},
+    "future_overrides": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "instruction": {"type": "string"},
+          "scope": {"type": "string"},
+          "episode_target": {"type": "integer"}
+        }
+      }
+    },
+    "notes": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": true
+}
+

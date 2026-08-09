@@ -1,5 +1,8 @@
 {
   "episode": 1,
+  "context_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "draft_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+  "draft_version": "v001",
   "verdict": "blocked",
   "summary": "台词铺垫缺失、认知顺序错误、雷击因果不足",
   "issues": [
@@ -9,7 +12,7 @@
       "category": "dialogue_pairing",
       "location": "叶聆“吃不完的苦”",
       "problem": "删除了原文“吃得苦中苦”铺垫，包袱失去语言对应",
-      "source_evidence": "第1章：996“吃得苦中苦，你就能得到——”",
+      "evidence": {"evidence_type": "source", "quote": "吃得苦中苦，你就能得到——"},
       "fix": "恢复完整 setup→payoff 对话链"
     },
     {
@@ -18,7 +21,7 @@
       "category": "causality",
       "location": "雷击段落",
       "problem": "雷击前缺少谢淮舟拒绝与发誓的因果铺垫",
-      "source_evidence": "第1章：谢淮舟发誓绝不会爱上叶聆；五秒牵手任务失败",
+      "evidence": {"evidence_type": "source", "quote": "只有纯正恋爱脑才能听见我"},
       "fix": "在雷击前补齐拒绝/发誓与倒计时失败"
     },
     {
@@ -27,11 +30,10 @@
       "category": "character_knowledge",
       "location": "结尾叶聆台词",
       "problem": "“死我”被移动到错绑揭示之后，违背原文反应时序",
-      "source_evidence": "第1章：叶聆挑衅“你有本事就劈死我——”在雷击前，雷击打断该句",
+      "evidence": {"evidence_type": "source", "quote": "你有本事就劈死我——"},
       "fix": "把挑衅句移回雷击前并保留被打断"
     }
   ],
   "timing_advisory": {"estimated_seconds": 95, "preferred_seconds": [90, 130], "blocking": false},
   "writer_decision_required": true
 }
-

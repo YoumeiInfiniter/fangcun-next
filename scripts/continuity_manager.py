@@ -11,12 +11,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .common import now_iso, read_json, stable_hash
+from .common import now_iso, read_json, sha256_text, stable_hash
 from .schema_validate import ensure_valid
 from .script_validator import parse_script
 from .state_store import (
     active_artifact_path,
+    active_version_id,
     append_writer_override,
+    artifact_version_record,
+    commit_artifact,
     load_continuity,
     load_config,
     save_continuity,
@@ -103,6 +106,71 @@ def extract_model_assisted(project_dir: Path, episode: int, script_text: str) ->
     return None
 
 
+def _delta_dir(project_dir: Path) -> Path:
+    return project_dir / "state" / "continuity_deltas"
+
+
+def save_continuity_delta(
+    project_dir: Path,
+    *,
+    episode: int,
+    delta: dict,
+    script_hash: str,
+    draft_version: str,
+) -> Path:
+    """Persist a host-agent/model continuity delta (idempotent by content)."""
+    from .schema_validate import ensure_valid
+    from .common import sha256_text
+
+    ensure_valid(delta, "continuity-delta.schema.json")
+    delta_content = dict(delta)
+    delta_content["episode"] = episode
+    delta_content["draft_version"] = draft_version
+    delta_content["script_hash"] = script_hash
+    content_hash = sha256_text(__import__("json").dumps(delta_content, ensure_ascii=False, sort_keys=True))
+    path = _delta_dir(project_dir) / f"delta_EP{episode:03d}_{script_hash[:8]}_{content_hash[:8]}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        return path
+    from .common import atomic_write_json
+
+    atomic_write_json(path, delta_content)
+    return path
+
+
+def _load_delta(project_dir: Path, episode: int, script_hash: str) -> dict | None:
+    from .common import read_json
+
+    matches = sorted(_delta_dir(project_dir).glob(f"delta_EP{episode:03d}_{script_hash[:8]}_*.json"))
+    if not matches:
+        return None
+    return read_json(matches[-1])
+
+
+def _delta_complete(delta: dict) -> bool:
+    return bool(
+        delta.get("facts")
+        or delta.get("character_knowledge")
+        or delta.get("open_hooks")
+        or delta.get("resolved_hooks")
+        or delta.get("future_overrides")
+    )
+
+
+def _normalize_fact(fact: dict, episode: int, script_hash: str, draft_version: str, idx: int) -> dict:
+    return {
+        "fact_id": fact.get("fact_id") or f"F-{episode:03d}-{idx:03d}",
+        "category": fact.get("category", "event"),
+        "fact": str(fact.get("fact", "")),
+        "episode": episode,
+        "draft_version": draft_version,
+        "script_hash": script_hash,
+        "evidence_location": str(fact.get("evidence_location", "") or ""),
+        "status": fact.get("status", "active"),
+        "recorded_at": now_iso(),
+    }
+
+
 def _merge_continuity(base: dict, extracted: dict, episode: int) -> dict:
     characters = list(dict.fromkeys(base.get("character_states", {}).keys()))
     for name in extracted.get("characters_seen", []) or []:
@@ -130,6 +198,7 @@ def refresh_continuity(project_dir: Path, up_to_episode: int | None = None) -> d
     """Rebuild continuity from all approved scripts (idempotent)."""
     continuity = DEFAULT_CONTINUITY.copy()
     approved = []
+    per_episode_extraction: dict[str, dict] = {}
     if up_to_episode is None:
         up_to_episode = 10_000
     for episode in range(1, up_to_episode + 1):
@@ -138,32 +207,47 @@ def refresh_continuity(project_dir: Path, up_to_episode: int | None = None) -> d
             continue
         approved.append(episode)
         script_text = path.read_text(encoding="utf-8")
+        draft_version = active_version_id(project_dir, "approved_script", episode) or ""
+        record = artifact_version_record(project_dir, "approved_script", episode, draft_version) or {}
+        script_hash = record.get("content_hash") or sha256_text(script_text)
         deterministic = extract_deterministic(episode, script_text)
-        model_result = extract_model_assisted(project_dir, episode, script_text)
-        continuity = _merge_continuity(continuity, model_result or deterministic, episode)
-        if model_result:
-            for fact in model_result.get("facts", []) or []:
-                if fact not in continuity.setdefault("facts", []):
-                    continuity["facts"].append(fact)
-            for name, knowledge in (model_result.get("character_knowledge", {}) or {}).items():
-                known = continuity.setdefault("character_knowledge", {}).setdefault(name, [])
-                for item in knowledge:
-                    if item not in known:
-                        known.append(item)
-            for hook in model_result.get("open_hooks", []) or []:
-                if not any(h.get("hook") == hook.get("hook") for h in continuity.setdefault("open_hooks", [])):
-                    continuity["open_hooks"].append({**hook, "introduced_in": episode, "status": "open"})
-            for hook in model_result.get("resolved_hooks", []) or []:
-                continuity.setdefault("resolved_hooks", []).append({**hook, "resolved_in": episode})
-                continuity["open_hooks"] = [
-                    h for h in continuity.get("open_hooks", [])
-                    if h.get("hook") != hook.get("hook") and h.get("id") != hook.get("id")
-                ]
-        continuity["extraction_mode"] = "model_assisted" if model_result else "deterministic"
+        delta = _load_delta(project_dir, episode, script_hash)
+        if delta is None:
+            model_result = extract_model_assisted(project_dir, episode, script_text)
+            if model_result:
+                save_continuity_delta(
+                    project_dir,
+                    episode=episode,
+                    delta=model_result,
+                    script_hash=script_hash,
+                    draft_version=draft_version,
+                )
+                delta = _load_delta(project_dir, episode, script_hash)
+        if delta is not None:
+            mode = delta.get("extraction_mode", "host_agent")
+            complete = _delta_complete(delta)
+            continuity = _merge_delta(continuity, delta, episode, script_hash, draft_version)
+        else:
+            mode = "deterministic"
+            complete = False
+            continuity = _merge_continuity(continuity, deterministic, episode)
+        per_episode_extraction[str(episode)] = {
+            "mode": mode,
+            "complete": complete,
+            "script_hash": script_hash,
+            "draft_version": draft_version,
+        }
 
     continuity["approved_episodes"] = sorted(approved)
     continuity["updated_from_episode"] = max(approved) if approved else None
     continuity["version"] = (load_continuity(project_dir).get("version", 0) or 0) + 1
+    continuity["episode_extraction"] = per_episode_extraction
+    degraded = [ep for ep, info in per_episode_extraction.items() if info["mode"] == "deterministic"]
+    continuity["degraded_episodes"] = degraded
+    continuity["extraction_mode"] = (
+        "model_assisted" if any(i["mode"] != "deterministic" for i in per_episode_extraction.values())
+        else "deterministic"
+    )
     continuity["writer_overrides"] = [
         {"revision_id": r.get("revision_id"), "instruction": r.get("instruction"), "episode": r.get("episode"), "status": r.get("status")}
         for r in writer_overrides(project_dir)
@@ -174,19 +258,62 @@ def refresh_continuity(project_dir: Path, up_to_episode: int | None = None) -> d
     return continuity
 
 
+def _merge_delta(
+    continuity: dict,
+    delta: dict,
+    episode: int,
+    script_hash: str,
+    draft_version: str,
+) -> dict:
+    continuity = _merge_continuity(continuity, delta, episode)
+    for idx, fact in enumerate(delta.get("facts", []) or [], start=1):
+        normalized = _normalize_fact(fact, episode, script_hash, draft_version, idx)
+        existing_ids = {f.get("fact_id") for f in continuity.get("facts", [])}
+        existing_texts = {f.get("fact") for f in continuity.get("facts", [])}
+        if normalized["fact_id"] not in existing_ids and normalized["fact"] not in existing_texts:
+            continuity.setdefault("facts", []).append(normalized)
+    for name, knowledge in (delta.get("character_knowledge", {}) or {}).items():
+        known = continuity.setdefault("character_knowledge", {}).setdefault(name, [])
+        for item in knowledge:
+            if item not in known:
+                known.append(item)
+    for hook in delta.get("open_hooks", []) or []:
+        if not any(h.get("hook") == hook.get("hook") for h in continuity.setdefault("open_hooks", [])):
+            continuity["open_hooks"].append({**hook, "introduced_in": episode, "status": "open"})
+    for hook in delta.get("resolved_hooks", []) or []:
+        continuity.setdefault("resolved_hooks", []).append({**hook, "resolved_in": episode})
+        continuity["open_hooks"] = [
+            h
+            for h in continuity.get("open_hooks", [])
+            if h.get("hook") != hook.get("hook") and h.get("id") != hook.get("id")
+        ]
+    for override in delta.get("future_overrides", []) or []:
+        continuity.setdefault("notes_for_future", []).append(
+            f"EP{episode}: {override.get('instruction', '')}"
+        )
+    return continuity
+
+
 def apply_approved_script(project_dir: Path, episode: int, script_text: str, source: str = "writer") -> Path:
     """Register an approved script and refresh continuity from all approvals."""
     from .script_validator import validate_script
-    from .state_store import record_artifact
+    from .common import sha256_text
 
     config = load_config(project_dir)
     format_profile = config.get("script_format", "default-cn")
     report = validate_script(script_text, format_profile=format_profile, expected_episode=episode)
     if not report["ok"]:
         raise ValueError("定稿格式未通过：" + report["errors"][0]["message"])
-    path = project_dir / "artifacts" / "approved_scripts" / f"ep{episode:03d}.txt"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(script_text, encoding="utf-8")
-    record_artifact(project_dir, "approved_script", path, episode=episode, source=source, status="approved")
+    script_hash = sha256_text(script_text)
+    result = commit_artifact(
+        project_dir,
+        "approved_script",
+        content=script_text,
+        episode=episode,
+        source=source,
+        status="approved",
+        ext="txt",
+        meta={"script_hash": script_hash},
+    )
     refresh_continuity(project_dir)
-    return path
+    return result["path"]

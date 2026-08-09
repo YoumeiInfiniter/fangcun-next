@@ -14,6 +14,7 @@ from .common import atomic_write_json, ensure_dir, stable_hash, sha256_file
 from .source_retriever import retrieve_source_evidence, source_evidence_complete
 from .state_store import (
     active_artifact_path,
+    active_version_id,
     artifact_versions,
     load_continuity,
     load_config,
@@ -32,8 +33,38 @@ def context_dir(project_dir: Path) -> Path:
     return project_dir / "state" / "episode_contexts"
 
 
-def context_path(project_dir: Path, episode: int) -> Path:
-    return context_dir(project_dir) / f"episode_context_EP{episode:03d}.json"
+def snapshot_path(project_dir: Path, episode: int, context_hash: str) -> Path:
+    return context_dir(project_dir) / f"episode_context_EP{episode:03d}_{context_hash[:8]}.json"
+
+
+def current_pointer_path(project_dir: Path, episode: int) -> Path:
+    return context_dir(project_dir) / f"current_EP{episode:03d}.json"
+
+
+def current_context_path(project_dir: Path, episode: int) -> Path | None:
+    """Read the current snapshot pointer; None when missing."""
+    from .common import read_json
+
+    pointer = read_json(current_pointer_path(project_dir, episode))
+    if not isinstance(pointer, dict):
+        return None
+    path = context_dir(project_dir) / (pointer.get("path") or "")
+    return path if path.exists() else None
+
+
+def find_context_snapshot(project_dir: Path, episode: int, context_hash: str) -> Path | None:
+    """Locate an immutable snapshot by its hash (survives pointer changes)."""
+    expected = snapshot_path(project_dir, episode, context_hash)
+    if expected.exists():
+        return expected
+    matches = sorted(context_dir(project_dir).glob(f"episode_context_EP{episode:03d}_*.json"))
+    for path in matches:
+        from .common import read_json
+
+        data = read_json(path)
+        if isinstance(data, dict) and data.get("context_hash") == context_hash:
+            return path
+    return None
 
 
 def previous_hook_from_continuity(continuity: dict, episode: int) -> str | None:
@@ -46,6 +77,12 @@ def previous_hook_from_continuity(continuity: dict, episode: int) -> str | None:
 def _applicable_overrides(project_dir: Path, episode: int) -> list[dict]:
     records = writer_overrides(project_dir)
     applicable = []
+    latest_by_id: dict[str, dict] = {}
+    for record in records:
+        rid = record.get("revision_id")
+        if rid:
+            latest_by_id[rid] = record
+    records = list(latest_by_id.values())
     for record in records:
         if record.get("status") in ("pending", "rejected"):
             continue
@@ -60,28 +97,21 @@ def _applicable_overrides(project_dir: Path, episode: int) -> list[dict]:
     return applicable
 
 
-def _must_keep_evidence_check(outline: dict, evidence: dict) -> list[str]:
-    """Each must_keep needs at least a source or adaptation basis."""
-    warnings: list[str] = []
-    all_text = "\n".join(ex.get("text", "") for ex in evidence.get("raw_excerpts", []) or [])
+def _must_keep_problems_from_coverage(evidence: dict) -> list[str]:
+    """must_keep traceability comes from the retrieval coverage ledger."""
+    return [
+        f"must_keep「{item.get('anchor_id')}」未找到原文依据或改编依据"
+        for item in evidence.get("coverage", []) or []
+        if item.get("anchor_type") == "must_keep" and item.get("omitted")
+    ]
 
-    def _event_parts(event: dict) -> list[str]:
-        parts = [str(event.get("event", "")), str(event.get("result", ""))]
-        actions = event.get("actions")
-        if isinstance(actions, list):
-            parts.extend(str(a) for a in actions)
-        return parts
 
-    event_text = "\n".join(" ".join(_event_parts(e)) for e in evidence.get("events", []) or [])
-    adaptation_basis = outline.get("adaptation_basis", []) or []
-    for item in outline.get("must_keep", []) or []:
-        if not item:
-            continue
-        has_source = item in all_text or item in event_text
-        has_basis = any(item in str(b) for b in adaptation_basis)
-        if not has_source and not has_basis:
-            warnings.append(f"must_keep「{item}」未找到原文依据或改编依据")
-    return warnings
+def pending_revisions(project_dir: Path, episode: int) -> list[dict]:
+    """Pending revision requests relevant to this episode (never silent)."""
+    from .revision_manager import list_revisions
+
+    records = list_revisions(project_dir, episode=episode)
+    return [r for r in records if r.get("status") == "pending"]
 
 
 def build_episode_context(
@@ -111,14 +141,22 @@ def build_episode_context(
     )
     evidence_problems = source_evidence_complete(evidence)
     adaptation_basis = outline.get("adaptation_basis", []) or []
-    if evidence_problems and not adaptation_basis:
-        raise ContextIncompleteError(evidence_problems)
+    must_keep_problems = _must_keep_problems_from_coverage(evidence)
+    all_problems = evidence_problems + must_keep_problems
+    if all_problems and not adaptation_basis:
+        raise ContextIncompleteError(all_problems)
+    if must_keep_problems:
+        raise ContextIncompleteError(must_keep_problems)
 
     continuity = load_continuity(project_dir)
     previous_script = None
     previous_path = active_artifact_path(project_dir, "approved_script", episode - 1) if episode > 1 else None
     if previous_path and previous_path.exists():
         previous_script = previous_path.read_text(encoding="utf-8")
+    current_approved_script = None
+    current_approved_path = active_artifact_path(project_dir, "approved_script", episode)
+    if current_approved_path and current_approved_path.exists():
+        current_approved_script = current_approved_path.read_text(encoding="utf-8")
 
     overrides = _applicable_overrides(project_dir, episode)
     craft_modules = select_craft_modules(config, outline, craft_operation)
@@ -135,11 +173,17 @@ def build_episode_context(
         "adaptation_summary": _load_summary(project_dir, "adaptation_strategy"),
         "story_summary": _load_summary(project_dir, "story_outline"),
         "episode_outline": outline,
+        "context_versions": {
+            "episode_outline_version": active_version_id(project_dir, "episode_outline"),
+            "source_events_version": active_version_id(project_dir, "source_events"),
+        },
         "source_evidence": evidence,
         "previous_approved_script": previous_script,
+        "current_approved_script": current_approved_script,
         "previous_episode_hook": previous_hook_from_continuity(continuity, episode),
         "continuity_state": continuity,
         "writer_overrides": overrides,
+        "pending_revisions": pending_revisions(project_dir, episode),
         "selected_craft_modules": craft_modules,
         "format_profile": config.get("script_format", "default-cn"),
         "advisory_timing": advisory,
@@ -148,16 +192,29 @@ def build_episode_context(
     context["role"] = role
     context["completeness"] = {
         "problems": [],
-        "warnings": _must_keep_evidence_check(outline, evidence),
+        "warnings": [],
         "evidence_problems": evidence_problems,
+        "must_keep_problems": must_keep_problems,
     }
     if save:
-        path = context_path(project_dir, episode)
+        path = snapshot_path(project_dir, episode, context["context_hash"])
         ensure_dir(path.parent)
         atomic_write_json(path, context)
         context["context_file"] = str(path)
-        (path.parent / f"episode_context_EP{episode:03d}.sha256").write_text(
+        (path.parent / f"{path.name}.sha256").write_text(
             sha256_file(path) + "  " + path.name + "\n", encoding="utf-8"
+        )
+        from .common import atomic_write_json as _atomic_write_json
+
+        _atomic_write_json(
+            current_pointer_path(project_dir, episode),
+            {
+                "context_hash": context["context_hash"],
+                "path": path.name,
+                "episode_outline_version": body["context_versions"]["episode_outline_version"],
+                "source_events_version": body["context_versions"]["source_events_version"],
+                "created_at": __import__("time").strftime("%Y-%m-%dT%H:%M:%S%z"),
+            },
         )
     return context
 
@@ -207,6 +264,15 @@ def _load_events(project_dir: Path) -> list[dict]:
 def _load_summary(project_dir: Path, kind: str) -> dict:
     from .common import read_json
 
+    summary_kind = {
+        "adaptation_strategy": "adaptation_summary",
+        "story_outline": "story_outline_summary",
+    }.get(kind)
+    if summary_kind:
+        summary_path = active_artifact_path(project_dir, summary_kind)
+        if summary_path and summary_path.exists():
+            data = read_json(summary_path)
+            return data if isinstance(data, dict) else {}
     path = active_artifact_path(project_dir, kind)
     if not path or not path.exists():
         return {}

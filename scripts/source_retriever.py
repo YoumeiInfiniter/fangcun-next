@@ -8,19 +8,22 @@ Retrieval order (spec §12.2):
   5. necessary surrounding context;
   6. proportional fallback ONLY when no anchor resolves.
 
-Excerpts are never cut in the middle of a sentence or a quote, and
-setup/payoff pairs are kept together.
+Every request is tracked in a coverage ledger (S1-1). Direct event/chapter
+anchors must be backed by real excerpt text; setup/payoff pairs and
+must_preserve_pairing quotes are indivisible; long explicit chapters always
+yield at least one excerpt. When the budget would omit a required anchor the
+retrieval is retried with a higher budget before reporting omission.
 """
 
 from __future__ import annotations
 
 import re
 
+from .common import sha256_text
 from .source_ingest import load_chapter_index, read_all_chapters, read_chapter
 
 
 SENTENCE_BOUNDARY = re.compile(r"(?<=[。！？!?…])|(?<=\n)")
-SPACE_RE = re.compile(r"\s+")
 
 
 def _sentence_spans(text: str) -> list[tuple[int, int]]:
@@ -37,7 +40,6 @@ def _sentence_spans(text: str) -> list[tuple[int, int]]:
 
 
 def _snap_span(text: str, start: int, end: int) -> tuple[int, int]:
-    """Extend a span to sentence boundaries without cutting a quote."""
     start = max(0, min(start, len(text)))
     end = max(start, min(end, len(text)))
     spans = _sentence_spans(text)
@@ -49,8 +51,7 @@ def _snap_span(text: str, start: int, end: int) -> tuple[int, int]:
         if e >= end:
             snapped_end = e
             break
-    # If end sits inside the last sentence, extend to its end.
-    if snapped_end <= end and spans:
+    if snapped_end < end and spans:
         snapped_end = spans[-1][1]
     return snapped_start, snapped_end
 
@@ -61,6 +62,19 @@ def _expand_to_quote(text: str, start: int, end: int, quote: str) -> tuple[int, 
         return start, end
     q_start, q_end = _snap_span(text, pos, pos + len(quote))
     return min(start, q_start), max(end, q_end)
+
+
+def _make_excerpt(chapter_text: str, chapter: dict, start: int, end: int, reason: str) -> dict:
+    text = chapter_text[start:end]
+    return {
+        "chapter_id": chapter["chapter_index"],
+        "chapter_title": chapter.get("title") or chapter.get("heading", ""),
+        "source_file": chapter.get("file", ""),
+        "source_span": {"start": start, "end": end},
+        "reason": reason,
+        "text": text,
+        "excerpt_hash": sha256_text(text),
+    }
 
 
 def _events_by_id(events: list[dict]) -> dict[str, dict]:
@@ -99,7 +113,6 @@ def _keywords_from(outline: dict, events: list[dict]) -> list[str]:
         for part in (anchor.get("setup"), anchor.get("payoff")):
             if isinstance(part, str) and len(part) >= 2:
                 keywords.append(part)
-    # De-duplicate while preserving order.
     seen: set[str] = set()
     unique: list[str] = []
     for kw in keywords:
@@ -115,87 +128,80 @@ def _excerpt_for_keyword(chapter_text: str, chapter: dict, keyword: str, budget:
         return None
     half = budget // 2
     start, end = _snap_span(chapter_text, max(0, pos - half), min(len(chapter_text), pos + len(keyword) + half))
-    return {
-        "chapter_id": chapter["chapter_index"],
-        "chapter_title": chapter.get("title") or chapter.get("heading", ""),
-        "source_file": chapter.get("file", ""),
-        "source_span": {"start": start, "end": end},
-        "reason": f"keyword:{keyword[:20]}",
-        "text": chapter_text[start:end],
-    }
+    return _make_excerpt(chapter_text, chapter, start, end, f"keyword:{keyword[:20]}")
 
 
-def _event_excerpts(chapter_text: str, chapter: dict, events: list[dict], budget: int) -> list[dict]:
-    excerpts: list[dict] = []
-    for event in events:
-        span = event.get("source_span") or {}
-        start, end = span.get("start", 0), span.get("end", len(chapter_text))
-        start, end = _snap_span(chapter_text, start, end)
+def _pair_span(chapter_text: str, setup: str | None, payoff: str | None) -> tuple[int, int] | None:
+    """Union span covering both setup and payoff (indivisible unit)."""
+    s1 = chapter_text.find(setup) if setup else -1
+    s2 = chapter_text.find(payoff) if payoff else -1
+    if s1 < 0 and s2 < 0:
+        return None
+    if s1 < 0:
+        s1 = s2
+    if s2 < 0:
+        s2 = s1
+    start = min(s1, s2)
+    end = max(s1 + len(setup or ""), s2 + len(payoff or ""))
+    return _snap_span(chapter_text, start, end)
+
+
+def _event_excerpts(chapter_text: str, chapter: dict, event: dict, budget: int) -> list[dict]:
+    span = event.get("source_span") or {}
+    start, end = span.get("start", 0), span.get("end", len(chapter_text))
+    start, end = _snap_span(chapter_text, start, end)
+    for quote in event.get("key_quotes", []) or []:
+        qtext = quote.get("text", "")
+        if qtext:
+            start, end = _expand_to_quote(chapter_text, start, end, qtext)
+    excerpt_text = chapter_text[start:end]
+    if len(excerpt_text) > budget:
         for quote in event.get("key_quotes", []) or []:
             qtext = quote.get("text", "")
-            if qtext:
-                start, end = _expand_to_quote(chapter_text, start, end, qtext)
-        excerpt_text = chapter_text[start:end]
-        if len(excerpt_text) > budget:
-            # Prefer the core of the event: event description sentence then quotes.
-            for quote in event.get("key_quotes", []) or []:
-                qtext = quote.get("text", "")
-                if qtext and len(qtext) <= budget:
-                    qpos = chapter_text.find(qtext, start, end)
-                    if qpos >= 0:
-                        s2, e2 = _snap_span(chapter_text, qpos, qpos + len(qtext))
-                        if e2 - s2 <= budget:
-                            start, end = s2, e2
-                            break
-        if end - start > budget:
-            s3, e3 = _snap_span(chapter_text, start, start + budget)
-            if e3 - s3 > budget:
-                # Last resort: sentence-level block that still respects
-                # sentence boundaries, never a raw hard cut.
-                spans = _sentence_spans(chapter_text[start : start + budget * 2])
-                if spans:
-                    e3 = start + spans[-1][1]
-                s3, e3 = _snap_span(chapter_text, start, e3)
-            start, end = s3, e3
-        if end > start:
-            excerpts.append(
-                {
-                    "chapter_id": chapter["chapter_index"],
-                    "chapter_title": chapter.get("title") or chapter.get("heading", ""),
-                    "source_file": chapter.get("file", ""),
-                    "source_span": {"start": start, "end": end},
-                    "reason": f"event:{event.get('event_id')}",
-                    "text": chapter_text[start:end],
-                }
-            )
-    return excerpts
+            if qtext and len(qtext) <= budget:
+                qpos = chapter_text.find(qtext, start, end)
+                if qpos >= 0:
+                    s2, e2 = _snap_span(chapter_text, qpos, qpos + len(qtext))
+                    if e2 - s2 <= budget:
+                        start, end = s2, e2
+                        break
+    if end - start > budget:
+        s3, e3 = _snap_span(chapter_text, start, start + budget)
+        if e3 - s3 > budget:
+            spans = _sentence_spans(chapter_text[start : start + budget * 2])
+            if spans:
+                e3 = start + spans[-1][1]
+            s3, e3 = _snap_span(chapter_text, start, e3)
+        start, end = s3, e3
+    if end > start:
+        return [_make_excerpt(chapter_text, chapter, start, end, f"event:{event.get('event_id')}")]
+    return []
 
 
 def _dedupe_excerpts(excerpts: list[dict]) -> list[dict]:
-    seen: set[tuple[int, int, int]] = set()
+    seen: set[tuple[int, int, int, str]] = set()
     result: list[dict] = []
     for ex in excerpts:
-        key = (ex["chapter_id"], ex["source_span"]["start"], ex["source_span"]["end"])
+        key = (ex["chapter_id"], ex["source_span"]["start"], ex["source_span"]["end"], ex.get("reason", ""))
         if key not in seen:
             seen.add(key)
             result.append(ex)
     return result
 
 
-def retrieve_source_evidence(
-    project_dir: Path,
+def _retrieve(
+    project_dir,
     outline: dict,
     events: list[dict],
     *,
-    max_chars: int = 6000,
-    per_chapter_budget: int = 2000,
+    max_chars: int,
+    per_chapter_budget: int,
 ) -> dict:
-    """Build source_evidence for one episode from anchors, never average-slicing."""
     events_by_id = _events_by_id(events)
     anchor_ids = list(outline.get("source_event_ids", []) or [])
     anchor_chapters = list(outline.get("source_chapters", []) or [])
+    anchor_chapters = [int(c) for c in anchor_chapters]
 
-    # 1. event ids → chapters
     resolved_events: list[dict] = []
     for eid in anchor_ids:
         event = events_by_id.get(eid)
@@ -205,13 +211,14 @@ def retrieve_source_evidence(
             if isinstance(ch, int) and ch not in anchor_chapters:
                 anchor_chapters.append(ch)
 
-    # 4. dependency events (recursive), added after direct anchors.
+    dep_ids: list[str] = []
     seen_deps: set[str] = set()
     for eid in anchor_ids:
         for dep in _collect_dependencies(eid, events_by_id, seen_deps):
             event = events_by_id.get(dep)
             if event and event not in resolved_events:
                 resolved_events.append(event)
+                dep_ids.append(dep)
                 ch = event.get("chapter_id")
                 if isinstance(ch, int) and ch not in anchor_chapters:
                     anchor_chapters.append(ch)
@@ -225,26 +232,20 @@ def retrieve_source_evidence(
     chapter_ids: list[int] = []
     used_order: list[str] = []
 
-    # Event-span excerpts first.
     for event in resolved_events:
         ch_id = event.get("chapter_id")
         chapter_text = chapters.get(ch_id)
         if not chapter_text:
             continue
-        chapter_ids.append(ch_id)
+        if ch_id not in chapter_ids:
+            chapter_ids.append(ch_id)
         meta = chapter_meta.get(ch_id, {})
-        excerpts.extend(
-            _event_excerpts(
-                chapter_text,
-                {"chapter_index": ch_id, "title": meta.get("title", ""), "file": meta.get("file", "")},
-                [event],
-                per_chapter_budget,
-            )
-        )
+        chapter = {"chapter_index": ch_id, "title": meta.get("title", ""), "file": meta.get("file", "")}
+        excerpts.extend(_event_excerpts(chapter_text, chapter, event, per_chapter_budget))
     if anchor_ids or resolved_events:
         used_order.append("event_ids")
 
-    # 2. explicitly listed chapters.
+    # Explicit chapters: long chapters still must yield at least one excerpt.
     for ch_id in anchor_chapters:
         chapter = None
         chapter_text = chapters.get(ch_id)
@@ -256,22 +257,35 @@ def retrieve_source_evidence(
             continue
         if ch_id not in chapter_ids:
             chapter_ids.append(ch_id)
-        if len(chapter_text) <= per_chapter_budget:
-            excerpts.append(
-                {
-                    "chapter_id": ch_id,
-                    "chapter_title": (chapter or chapter_meta.get(ch_id, {})).get("title", ""),
-                    "source_file": (chapter or {}).get("file", ""),
-                    "source_span": {"start": 0, "end": len(chapter_text)},
-                    "reason": "chapter_full",
-                    "text": chapter_text,
-                }
-            )
-
+        meta = chapter_meta.get(ch_id, {})
+        chapter_dict = {"chapter_index": ch_id, "title": meta.get("title", ""), "file": meta.get("file", "")}
+        has_excerpt = any(ex["chapter_id"] == ch_id for ex in excerpts)
+        if not has_excerpt:
+            if len(chapter_text) <= per_chapter_budget:
+                excerpts.append(_make_excerpt(chapter_text, chapter_dict, 0, len(chapter_text), "chapter_full"))
+            else:
+                start, end = _snap_span(chapter_text, 0, per_chapter_budget)
+                excerpts.append(_make_excerpt(chapter_text, chapter_dict, start, end, "chapter_head"))
     if anchor_chapters:
         used_order.append("chapters")
 
-    # 3. keyword search when explicit anchors are missing or too thin.
+    # Dialogue anchors: setup/payoff are indivisible units.
+    for idx, anchor in enumerate(outline.get("dialogue_anchors", []) or []):
+        setup = anchor.get("setup")
+        payoff = anchor.get("payoff")
+        if not setup and not payoff:
+            continue
+        for ch_id in chapter_ids:
+            chapter_text = chapters.get(ch_id)
+            if not chapter_text:
+                continue
+            span = _pair_span(chapter_text, setup, payoff)
+            if span:
+                meta = chapter_meta.get(ch_id, {})
+                chapter_dict = {"chapter_index": ch_id, "title": meta.get("title", ""), "file": meta.get("file", "")}
+                excerpts.append(_make_excerpt(chapter_text, chapter_dict, span[0], span[1], f"dialogue_anchor:{idx:03d}"))
+                break
+
     if len(excerpts) < len(anchor_ids) + len(anchor_chapters) or not excerpts:
         keyword_events = list(resolved_events)
         for eid in anchor_ids:
@@ -284,12 +298,8 @@ def retrieve_source_evidence(
                 if ch_id in chapter_ids and excerpts:
                     continue
                 meta = chapter_meta.get(ch_id, {})
-                ex = _excerpt_for_keyword(
-                    chapter_text,
-                    {"chapter_index": ch_id, "title": meta.get("title", ""), "file": meta.get("file", "")},
-                    kw,
-                    per_chapter_budget,
-                )
+                chapter_dict = {"chapter_index": ch_id, "title": meta.get("title", ""), "file": meta.get("file", "")}
+                ex = _excerpt_for_keyword(chapter_text, chapter_dict, kw, per_chapter_budget)
                 if ex:
                     excerpts.append(ex)
                     if ch_id not in chapter_ids:
@@ -301,9 +311,6 @@ def retrieve_source_evidence(
 
     excerpts = _dedupe_excerpts(excerpts)
 
-    # 5. surrounding context: previous chapter tail for opening bridge and
-    # next chapter head for hooks are only added when requested via outline.
-    # 6. proportional fallback ONLY when nothing else resolved.
     fallback_used = False
     if not excerpts:
         total_chars = sum(len(t) for t in chapters.values())
@@ -316,19 +323,12 @@ def retrieve_source_evidence(
                     start, end = 0, len(chapter_text)
                 else:
                     start, end = _snap_span(chapter_text, 0, per)
-                excerpts.append(
-                    {
-                        "chapter_id": ch_id,
-                        "chapter_title": "",
-                        "source_file": "",
-                        "source_span": {"start": start, "end": end},
-                        "reason": "proportional_fallback",
-                        "text": chapter_text[start:end],
-                    }
-                )
-                chapter_ids.append(ch_id)
+                meta = chapter_meta.get(ch_id, {})
+                chapter_dict = {"chapter_index": ch_id, "title": meta.get("title", ""), "file": meta.get("file", "")}
+                excerpts.append(_make_excerpt(chapter_text, chapter_dict, start, end, "proportional_fallback"))
+                if ch_id not in chapter_ids:
+                    chapter_ids.append(ch_id)
 
-    # Budget enforcement: prioritize mainline event excerpts, then quotes.
     def _priority(ex: dict) -> tuple[int, int]:
         event_id = str(ex.get("reason", "")).replace("event:", "")
         importance = 1
@@ -356,11 +356,23 @@ def retrieve_source_evidence(
     for anchor in outline.get("dialogue_anchors", []) or []:
         quotes.append({"anchor": True, **anchor})
 
+    coverage = _build_coverage(
+        outline=outline,
+        anchor_ids=anchor_ids,
+        anchor_chapters=anchor_chapters,
+        dep_ids=dep_ids,
+        resolved_events=resolved_events,
+        kept=kept,
+        events_by_id=events_by_id,
+        fallback_used=fallback_used,
+    )
+
     return {
         "chapter_ids": sorted(set(chapter_ids)),
         "events": resolved_events,
         "quotes": quotes,
         "raw_excerpts": kept,
+        "coverage": coverage,
         "retrieval_report": {
             "order_used": used_order,
             "fallback_used": fallback_used,
@@ -370,8 +382,168 @@ def retrieve_source_evidence(
     }
 
 
+def _build_coverage(
+    *,
+    outline: dict,
+    anchor_ids: list[str],
+    anchor_chapters: list[int],
+    dep_ids: list[str],
+    resolved_events: list[dict],
+    kept: list[dict],
+    events_by_id: dict[str, dict],
+    fallback_used: bool,
+) -> list[dict]:
+    ledger: list[dict] = []
+    kept_text = "\n".join(ex.get("text", "") for ex in kept)
+    event_text = "\n".join(
+        " ".join(
+            str(v)
+            for v in [
+                str(e.get("event", "")),
+                str(e.get("result", "")),
+                *(e.get("actions", []) if isinstance(e.get("actions"), list) else []),
+            ]
+        )
+        for e in resolved_events
+    )
+    adaptation_basis = outline.get("adaptation_basis", []) or []
+
+    def _has_event_excerpt(eid: str) -> bool:
+        return any(ex.get("reason") == f"event:{eid}" for ex in kept)
+
+    for eid in anchor_ids:
+        event = events_by_id.get(eid)
+        resolved = event is not None
+        included = resolved and _has_event_excerpt(eid)
+        ledger.append(
+            {
+                "anchor_type": "event",
+                "anchor_id": eid,
+                "requested": True,
+                "resolved": resolved,
+                "included": included,
+                "omitted": not included,
+                "reason": "" if included else ("event_not_found" if not resolved else "no_excerpt"),
+            }
+        )
+    for dep in dep_ids:
+        included = _has_event_excerpt(dep)
+        ledger.append(
+            {
+                "anchor_type": "dependency",
+                "anchor_id": dep,
+                "requested": True,
+                "resolved": included,
+                "included": included,
+                "omitted": not included,
+                "reason": "" if included else "no_excerpt",
+            }
+        )
+    for ch in anchor_chapters:
+        included = any(ex.get("chapter_id") == ch for ex in kept)
+        ledger.append(
+            {
+                "anchor_type": "chapter",
+                "anchor_id": str(ch),
+                "requested": True,
+                "resolved": included,
+                "included": included,
+                "omitted": not included,
+                "reason": "" if included else "no_excerpt",
+            }
+        )
+    for idx, anchor in enumerate(outline.get("dialogue_anchors", []) or []):
+        if not (anchor.get("setup") or anchor.get("payoff")):
+            continue
+        included = any(ex.get("reason") == f"dialogue_anchor:{idx:03d}" for ex in kept)
+        ledger.append(
+            {
+                "anchor_type": "dialogue_anchor",
+                "anchor_id": anchor.get("source", f"anchor-{idx:03d}"),
+                "requested": True,
+                "resolved": included,
+                "included": included,
+                "omitted": not included,
+                "reason": "" if included else "pair_not_in_chapter_or_budget",
+            }
+        )
+    for item in outline.get("must_keep", []) or []:
+        if not item:
+            continue
+        has_source = item in kept_text or item in event_text
+        has_basis = any(item in str(b) for b in adaptation_basis)
+        included = has_source or has_basis
+        ledger.append(
+            {
+                "anchor_type": "must_keep",
+                "anchor_id": item,
+                "requested": True,
+                "resolved": included,
+                "included": included,
+                "omitted": not included,
+                "reason": "" if included else "no_source_or_adaptation_basis",
+            }
+        )
+    if fallback_used:
+        ledger.append(
+            {
+                "anchor_type": "fallback",
+                "anchor_id": "proportional",
+                "requested": False,
+                "resolved": False,
+                "included": False,
+                "omitted": True,
+                "reason": "proportional_fallback_used",
+            }
+        )
+    return ledger
+
+
+def retrieve_source_evidence(
+    project_dir,
+    outline: dict,
+    events: list[dict],
+    *,
+    max_chars: int = 6000,
+    per_chapter_budget: int = 2000,
+) -> dict:
+    """Build source_evidence; retry once with a bigger budget when required
+    anchors would otherwise be omitted."""
+    result = _retrieve(
+        project_dir,
+        outline,
+        events,
+        max_chars=max_chars,
+        per_chapter_budget=per_chapter_budget,
+    )
+    required_omitted = [
+        c for c in result["coverage"]
+        if c.get("anchor_type") in ("event", "chapter", "dialogue_anchor")
+        and c.get("omitted")
+        and c.get("reason") != "event_not_found"
+    ]
+    if required_omitted:
+        retried = _retrieve(
+            project_dir,
+            outline,
+            events,
+            max_chars=max_chars * 2,
+            per_chapter_budget=per_chapter_budget * 3,
+        )
+        retried_omitted = [
+            c for c in retried["coverage"]
+            if c.get("anchor_type") in ("event", "chapter", "dialogue_anchor") and c.get("omitted")
+        ]
+        if len(retried_omitted) < len(required_omitted) or not retried_omitted:
+            result = retried
+        for coverage_item in result["coverage"]:
+            if coverage_item.get("omitted") and coverage_item.get("reason") == "no_excerpt":
+                coverage_item["reason"] = "no_excerpt_after_budget_retry"
+    return result
+
+
 def source_evidence_complete(evidence: dict) -> list[str]:
-    """Completeness checks used by context_builder (spec §12.4)."""
+    """Completeness checks driven by the coverage ledger (spec §12.4)."""
     problems: list[str] = []
     if not evidence.get("chapter_ids"):
         problems.append("当前集没有任何原文证据")
@@ -379,4 +551,12 @@ def source_evidence_complete(evidence: dict) -> list[str]:
         problems.append("当前集事件和摘录均为空")
     if evidence.get("retrieval_report", {}).get("fallback_used"):
         problems.append("未找到集纲锚点，使用了全剧比例回退，证据强度低")
+    for item in evidence.get("coverage", []) or []:
+        if not item.get("requested"):
+            continue
+        if item.get("omitted"):
+            anchor = item.get("anchor_id", "")
+            kind = item.get("anchor_type", "anchor")
+            reason = item.get("reason", "omitted")
+            problems.append(f"锚点 {kind}:{anchor} 未进入原文证据（{reason}）")
     return problems

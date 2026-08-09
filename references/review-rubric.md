@@ -29,7 +29,11 @@ Reviewer 必须收到：完整 episode_contract、同一份原文事件与摘录
 
 ## 证据要求
 
-每个 error 必须带 `source_evidence` 或 `adaptation_basis`；给不出证据时降为 warning 并说明证据不足。保存审核报告时由程序强制执行。
+每个 error 必须带结构化 `evidence`（`evidence_type: source|adaptation`），程序会在绑定的
+episode_context 中验证 event_id/chapter/source_span/excerpt_hash/quote 或
+adaptation_decision_id 是否真实存在；任意字符串或不存在引用拒绝保存。
+审核报告必须显式携带 `context_hash`、`draft_hash`、`draft_version`，缺任一拒绝保存，
+不允许自动补齐；无证据的 error 拒绝保存（不自动降级）。
 
 ## 重写原则
 
@@ -39,4 +43,3 @@ Reviewer 必须收到：完整 episode_contract、同一份原文事件与摘录
 - 不自由生成另一版故事；
 - 一次自动重写后仍有问题，交给编剧或等待明确指令；
 - 重写后重新审核同一问题，不临时不断新增创意标准。
-

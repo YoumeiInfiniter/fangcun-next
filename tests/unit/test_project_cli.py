@@ -120,6 +120,15 @@ class ProjectCliTests(unittest.TestCase):
         code = main(list(argv))
         self.assertEqual(code, expect, f"CLI 失败: {argv}")
 
+    def _draft_binding(self, episode: int) -> dict:
+        from scripts.state_store import active_version_id, draft_meta_record
+
+        version = active_version_id(self.project_dir, "script_draft", episode)
+        self.assertIsNotNone(version)
+        meta = draft_meta_record(self.project_dir, episode, version)
+        self.assertIsNotNone(meta)
+        return {"draft_version": version, **meta}
+
     def test_full_local_workflow(self):
         self.run_cli("init", "--dir", str(self.project_dir), "--config", str(self.config_file))
         self.run_cli("ingest-source", "--dir", str(self.project_dir), "--file", str(self.novel))
@@ -129,8 +138,12 @@ class ProjectCliTests(unittest.TestCase):
         self.run_cli("get-episode-context", "--dir", str(self.project_dir), "--episode", "1")
         self.run_cli("save-draft", "--dir", str(self.project_dir), "--episode", "1", "--file", str(self.script))
 
+        binding = self._draft_binding(1)
         review = {
             "episode": 1,
+            "context_hash": binding["context_hash"],
+            "draft_hash": binding["draft_hash"],
+            "draft_version": binding["draft_version"],
             "verdict": "blocked",
             "summary": "存在台词铺垫缺失",
             "issues": [
@@ -139,7 +152,7 @@ class ProjectCliTests(unittest.TestCase):
                     "severity": "error",
                     "category": "dialogue_pairing",
                     "problem": "删除了原文铺垫",
-                    "source_evidence": "第1章",
+                    "evidence": {"evidence_type": "source", "quote": "什么动静？"},
                     "fix": "恢复铺垫",
                 }
             ],
@@ -154,27 +167,26 @@ class ProjectCliTests(unittest.TestCase):
         self.run_cli("export", "--dir", str(self.project_dir))
         self.assertTrue((self.project_dir / "export" / "export.txt").exists())
 
-    def test_review_error_without_evidence_is_downgraded_to_warning(self):
+    def test_review_error_without_evidence_is_rejected(self):
         self.run_cli("init", "--dir", str(self.project_dir), "--config", str(self.config_file))
         self.run_cli("ingest-source", "--dir", str(self.project_dir), "--file", str(self.novel))
         self.run_cli("save-events", "--dir", str(self.project_dir), "--file", str(self.events))
         self.run_cli("save-episode-outline", "--dir", str(self.project_dir), "--outline-json", str(self.outlines))
         self.run_cli("get-episode-context", "--dir", str(self.project_dir), "--episode", "1")
         self.run_cli("save-draft", "--dir", str(self.project_dir), "--episode", "1", "--file", str(self.script))
+        binding = self._draft_binding(1)
         review = {
             "episode": 1,
+            "context_hash": binding["context_hash"],
+            "draft_hash": binding["draft_hash"],
+            "draft_version": binding["draft_version"],
             "verdict": "blocked",
             "summary": "无证据",
             "issues": [{"id": "X1", "severity": "error", "category": "causality", "problem": "断裂"}],
         }
         bad = self.root / "bad_review.json"
         bad.write_text(json.dumps(review, ensure_ascii=False), encoding="utf-8")
-        self.run_cli("save-review", "--dir", str(self.project_dir), "--episode", "1", "--file", str(bad))
-        saved = json.loads(
-            (self.project_dir / "artifacts" / "reviews" / "ep001_review.json").read_text(encoding="utf-8")
-        )
-        self.assertEqual(saved["issues"][0]["severity"], "warning")
-        self.assertIn("自动降级为 warning", saved["issues"][0]["problem"])
+        self.run_cli("save-review", "--dir", str(self.project_dir), "--episode", "1", "--file", str(bad), expect=1)
 
     def test_revision_affects_future_context(self):
         self.run_cli("init", "--dir", str(self.project_dir), "--config", str(self.config_file))
@@ -189,7 +201,10 @@ class ProjectCliTests(unittest.TestCase):
             "--auto-approve",
         )
         self.run_cli("get-episode-context", "--dir", str(self.project_dir), "--episode", "2")
-        context_file = self.project_dir / "state" / "episode_contexts" / "episode_context_EP002.json"
+        from scripts.context_builder import current_context_path
+
+        context_file = current_context_path(self.project_dir, 2)
+        self.assertIsNotNone(context_file)
         context = json.loads(context_file.read_text(encoding="utf-8"))
         self.assertTrue(any("下一集沿用新规则" in o["instruction"] for o in context["writer_overrides"]))
 
@@ -204,9 +219,9 @@ class ProjectCliTests(unittest.TestCase):
         single = self.root / "single_outline.json"
         single.write_text(json.dumps(OUTLINES[0], ensure_ascii=False), encoding="utf-8")
         self.run_cli("save-episode-outline", "--dir", str(self.project_dir), "--outline-json", str(single))
-        outlines = json.loads(
-            (self.project_dir / "artifacts" / "episode_outline" / "episode_outlines.json").read_text(encoding="utf-8")
-        )
+        from scripts.state_store import active_artifact_path
+
+        outlines = json.loads(active_artifact_path(self.project_dir, "episode_outline").read_text(encoding="utf-8"))
         self.assertEqual(len(outlines["episodes"]), 1)
 
     def test_check_api_without_config_fails_cleanly(self):

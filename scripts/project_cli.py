@@ -19,6 +19,7 @@ from typing import Any
 
 from . import __version__
 from .common import atomic_write_json, ensure_dir, now_iso, read_json, slugify
+from .common import sha256_text
 from .schema_validate import SchemaValidationError, ensure_valid
 from .state_store import (
     active_artifact_path,
@@ -26,8 +27,13 @@ from .state_store import (
     load_config,
     load_continuity,
     project_status,
+    commit_artifact,
+    active_version_id,
+    artifact_version_path,
+    artifact_version_record,
     record_artifact,
     save_config,
+    draft_meta_record,
 )
 
 
@@ -129,11 +135,15 @@ def cmd_save_requirements(args) -> int:
     save_config(project_dir, config, source="writer", note="requirements confirmed")
     from .format_renderer import render_project_brief_markdown
 
-    md_path = project_dir / "artifacts" / "project_brief" / "brief.md"
-    ensure_dir(md_path.parent)
-    md_path.write_text(render_project_brief_markdown(config), encoding="utf-8")
-    record_artifact(project_dir, "project_brief", md_path, source="writer", status="approved")
-    print(f"需求已保存：{md_path}")
+    result = commit_artifact(
+        project_dir,
+        "project_brief",
+        content=render_project_brief_markdown(config),
+        source="writer",
+        status="approved",
+        ext="md",
+    )
+    print(f"需求已保存：{result['path']}（{result['version']}）")
     return 0
 
 
@@ -158,11 +168,15 @@ def cmd_save_events(args) -> int:
             ensure_valid(event, "source-event.schema.json")
         except SchemaValidationError as exc:
             raise CliError(f"事件 {event.get('event_id', '?')} 未通过 Schema：\n" + "\n".join(exc.messages))
-    target = project_dir / "artifacts" / "source_events" / "events.json"
-    ensure_dir(target.parent)
-    atomic_write_json(target, events)
-    record_artifact(project_dir, "source_events", target, source="ai", status="approved")
-    print(f"事件资产已保存：{target}（{len(events)} 个事件）")
+    result = commit_artifact(
+        project_dir,
+        "source_events",
+        content=events,
+        source="ai",
+        status="approved",
+        ext="json",
+    )
+    print(f"事件资产已保存：{result['path']}（{result['version']}，{len(events)} 个事件）")
     return 0
 
 
@@ -239,19 +253,32 @@ def _save_stage_text(project_dir: Path, kind: str, file: Path, summary_file: str
     file = Path(file).expanduser().resolve()
     if not file.exists():
         raise CliError(f"产物文件不存在：{file}")
-    target_dir = project_dir / "artifacts" / kind
-    ensure_dir(target_dir)
-    target = target_dir / file.name
-    target.write_text(file.read_text(encoding="utf-8"), encoding="utf-8")
-    record_artifact(project_dir, kind, target, source="ai", status="approved")
+    result = commit_artifact(
+        project_dir,
+        kind,
+        content=file.read_text(encoding="utf-8"),
+        source="ai",
+        status="approved",
+        ext=file.suffix.lstrip(".") or "md",
+    )
+    print(f"{kind} 已保存：{result['path']}（{result['version']}）")
     if summary_file:
         summary = _load_json_file(Path(summary_file), "结构化摘要")
         if summary_schema:
             ensure_valid(summary, summary_schema)
-        summary_target = target_dir / f"{target.stem}.summary.json"
-        atomic_write_json(summary_target, summary)
-        record_artifact(project_dir, kind, summary_target, source="ai", status="approved")
-    print(f"{kind} 已保存：{target}")
+        summary_kind = {
+            "adaptation_strategy": "adaptation_summary",
+            "story_outline": "story_outline_summary",
+        }.get(kind, f"{kind}_summary")
+        summary_result = commit_artifact(
+            project_dir,
+            summary_kind,
+            content=summary,
+            source="ai",
+            status="approved",
+            ext="json",
+        )
+        print(f"{kind} 摘要已保存：{summary_result['path']}（{summary_result['version']}）")
 
 
 def cmd_save_adaptation(args) -> int:
@@ -285,16 +312,65 @@ def cmd_save_episode_outline(args) -> int:
             ensure_valid(outline, "episode-outline.schema.json")
         except SchemaValidationError as exc:
             raise CliError(f"第{ep}集未通过 Schema：\n" + "\n".join(exc.messages))
-    target = project_dir / "artifacts" / "episode_outline" / "episode_outlines.json"
-    ensure_dir(target.parent)
-    atomic_write_json(target, {"episodes": episodes})
-    record_artifact(project_dir, "episode_outline", target, source="ai", status="approved")
+    from .common import canonical_json
+
+    existing_path = active_artifact_path(project_dir, "episode_outline")
+    existing: dict[int, dict] = {}
+    if existing_path and existing_path.exists():
+        existing_data = _load_json_file(existing_path, "当前集纲")
+        existing_list = (
+            existing_data.get("episodes", existing_data)
+            if isinstance(existing_data, dict)
+            else existing_data
+        )
+        if isinstance(existing_list, list):
+            existing = {int(e.get("episode")): e for e in existing_list if isinstance(e, dict)}
+    incoming = {int(o["episode"]): o for o in episodes}
+
+    if args.replace:
+        merged = dict(incoming)
+        deleted = sorted(set(existing) - set(incoming))
+    else:
+        merged = dict(existing)
+        merged.update(incoming)
+        deleted = []
+    added = sorted(set(incoming) - set(existing))
+    modified = sorted(
+        ep for ep in incoming
+        if ep in existing and canonical_json(incoming[ep]) != canonical_json(existing[ep])
+    )
+    unchanged = sorted(ep for ep in incoming if ep in existing and ep not in modified)
+    merge_report = {
+        "mode": "replace" if args.replace else "upsert",
+        "added": added,
+        "modified": modified,
+        "unchanged": unchanged,
+        "deleted": deleted,
+        "total_episodes": len(merged),
+    }
+    ordered = [merged[ep] for ep in sorted(merged)]
+    result = commit_artifact(
+        project_dir,
+        "episode_outline",
+        content={"episodes": ordered},
+        source="ai",
+        status="approved",
+        ext="json",
+        meta={"merge_report": merge_report},
+    )
     if args.outline_md:
         md_path = Path(args.outline_md).expanduser().resolve()
         if md_path.exists():
-            md_target = project_dir / "artifacts" / "episode_outline" / "episode_outline.md"
-            md_target.write_text(md_path.read_text(encoding="utf-8"), encoding="utf-8")
-    print(f"集纲已保存：{target}（{len(episodes)} 集）")
+            commit_artifact(
+                project_dir,
+                "episode_outline_md",
+                content=md_path.read_text(encoding="utf-8"),
+                source="ai",
+                status="approved",
+                ext="md",
+            )
+    print(f"集纲已保存：{result['path']}（{result['version']}，共 {len(merged)} 集）")
+    print(f"合并报告：{json.dumps(merge_report, ensure_ascii=False)}")
     return 0
 
 
@@ -320,10 +396,22 @@ def cmd_get_episode_context(args) -> int:
     print(f"context_hash：{context['context_hash']}")
     print(f"Prompt 包：{path}")
     print(f"Craft 模块：{context['selected_craft_modules']}")
+    _print_pending_revisions(project_dir, args.episode)
     if context["completeness"]["warnings"]:
         for warning in context["completeness"]["warnings"]:
             print(f"警告：{warning}")
     return 0
+
+
+def _print_pending_revisions(project_dir: Path, episode: int) -> None:
+    from .revision_manager import list_revisions
+
+    pending = [r for r in list_revisions(project_dir, episode=episode) if r.get("status") == "pending"]
+    if pending:
+        print(f"⚠ 第{episode}集存在 {len(pending)} 条待编剧确认的修改意见：")
+        for record in pending:
+            print(f"  - {record.get('revision_id')}：{str(record.get('instruction'))[:60]}")
+        print("  继续创作前请先 approve-revision / reject-revision 处理。")
 
 
 def cmd_save_draft(args) -> int:
@@ -338,13 +426,43 @@ def cmd_save_draft(args) -> int:
     report = validate_script(text, format_profile=config.get("script_format", "default-cn"), expected_episode=args.episode)
     if not report["ok"]:
         raise CliError("草稿格式未通过：\n" + "\n".join(f"- {e['message']}" for e in report["errors"][:10]))
-    versions_dir = project_dir / "artifacts" / "script_drafts" / f"ep{args.episode:03d}"
-    ensure_dir(versions_dir)
-    count = len(list(versions_dir.glob("*.txt"))) + 1
-    target = versions_dir / f"ep{args.episode:03d}_v{count:03d}.txt"
-    target.write_text(text, encoding="utf-8")
-    record_artifact(project_dir, "script_draft", target, episode=args.episode, source="ai", status="draft")
-    print(f"草稿已保存：{target}")
+    context_hash = getattr(args, "context_hash", None) or None
+    if context_hash:
+        _load_context_snapshot_by_hash(project_dir, args.episode, context_hash)
+    else:
+        context = _load_context_snapshot(project_dir, args.episode)
+        context_hash = context["context_hash"]
+    draft_hash = sha256_text(text)
+    meta = {
+        "context_hash": context_hash,
+        "draft_hash": draft_hash,
+        "episode_outline_version": None,
+        "source_events_version": None,
+        "automatic_rewrite": bool(getattr(args, "automatic_rewrite", False)),
+    }
+    context_snapshot = _load_context_snapshot_by_hash(project_dir, args.episode, context_hash)
+    meta["episode_outline_version"] = context_snapshot.get("context_versions", {}).get("episode_outline_version")
+    meta["source_events_version"] = context_snapshot.get("context_versions", {}).get("source_events_version")
+    result = commit_artifact(
+        project_dir,
+        "script_draft",
+        content=text,
+        episode=args.episode,
+        source="model_rewrite" if meta["automatic_rewrite"] else "ai",
+        status="draft",
+        ext="txt",
+        meta=meta,
+    )
+    _print_pending_revisions(project_dir, args.episode)
+    print(f"草稿已保存：{result['path']}（{result['version']}，draft_hash={draft_hash[:12]}，context_hash={context_hash[:12]}）")
+    from .revision_manager import mark_revisions_applied
+
+    mark_revisions_applied(
+        project_dir,
+        episode=args.episode,
+        applied_to_kind="script_draft",
+        applied_to_version=result["version"],
+    )
     print(f"下一步：review --episode {args.episode}")
     return 0
 
@@ -354,16 +472,112 @@ def _review_bundle_path(project_dir: Path, episode: int) -> Path:
 
 
 def _load_context_snapshot(project_dir: Path, episode: int) -> dict:
-    from .context_builder import context_path, verify_context_hash
+    from .context_builder import current_context_path, verify_context_hash
 
-    path = context_path(project_dir, episode)
-    if not path.exists():
-        raise CliError(f"缺少 episode_context 快照：{path}。请先运行 get-episode-context --episode {episode}")
+    path = current_context_path(project_dir, episode)
+    if not path or not path.exists():
+        raise CliError(f"缺少当前 episode_context 快照：{path}。请先运行 get-episode-context --episode {episode}")
     context = _load_json_file(path, "episode_context")
     ok, _ = verify_context_hash(context)
     if not ok:
         raise CliError(f"episode_context 哈希校验失败，拒绝使用：{path}")
     return context
+
+
+def _load_context_snapshot_by_hash(project_dir: Path, episode: int, context_hash: str) -> dict:
+    from .context_builder import find_context_snapshot, verify_context_hash
+
+    if not context_hash:
+        raise CliError("缺少 context_hash，拒绝使用上下文")
+    path = find_context_snapshot(project_dir, episode, context_hash)
+    if not path:
+        raise CliError(f"找不到 context_hash={context_hash[:12]} 的不可变上下文快照，拒绝继续")
+    context = _load_json_file(path, "episode_context")
+    ok, _ = verify_context_hash(context)
+    if not ok:
+        raise CliError(f"episode_context 哈希校验失败，拒绝使用：{path}")
+    return context
+
+
+def _strip_evidence_prefix(value: str) -> str:
+    text = str(value).strip()
+    for prefix in ("原文：", "原文:", "source_evidence：", "source_evidence:", "source：", "source:", "证据：", "证据:"):
+        if text.startswith(prefix):
+            text = text[len(prefix):].strip()
+            break
+    return text
+
+
+def _normalize_issue_evidence(issue: dict) -> None:
+    """Convert legacy string evidence fields to structured evidence."""
+    evidence = issue.get("evidence")
+    if isinstance(evidence, dict):
+        evidence_type = str(evidence.get("evidence_type") or "").strip().lower()
+        if evidence_type not in ("source", "adaptation"):
+            if evidence.get("quote"):
+                evidence["evidence_type"] = "source"
+            elif evidence.get("adaptation_decision_id"):
+                evidence["evidence_type"] = "adaptation"
+        return
+    if evidence is not None:
+        return
+    if issue.get("source_evidence"):
+        issue["evidence"] = {
+            "evidence_type": "source",
+            "quote": _strip_evidence_prefix(issue["source_evidence"]),
+        }
+    elif issue.get("adaptation_basis"):
+        issue["evidence"] = {
+            "evidence_type": "adaptation",
+            "adaptation_decision_id": str(issue["adaptation_basis"]),
+        }
+
+
+def _validate_issue_evidence(issue: dict, context: dict) -> list[str]:
+    """Structured evidence must resolve against the bound episode context."""
+    if issue.get("severity") != "error":
+        return []
+    evidence = issue.get("evidence")
+    if not isinstance(evidence, dict):
+        return ["error 问题缺少结构化 evidence，拒绝保存"]
+    errors: list[str] = []
+    evidence_type = evidence.get("evidence_type")
+    excerpts = context.get("source_evidence", {}).get("raw_excerpts", []) or []
+    excerpt_texts = [ex.get("text", "") for ex in excerpts]
+    if evidence_type == "source":
+        quote = str(evidence.get("quote") or "").strip()
+        event_ids = {e.get("event_id") for e in context.get("source_evidence", {}).get("events", []) or []}
+        chapter_ids = context.get("source_evidence", {}).get("chapter_ids", []) or []
+        if quote:
+            if not any(quote in text for text in excerpt_texts):
+                errors.append(f"证据 quote「{quote[:30]}」与当前原文摘录不一致")
+        event_id = evidence.get("event_id")
+        if event_id and event_id not in event_ids:
+            errors.append(f"证据 event_id {event_id} 不存在于当前上下文")
+        chapter_id = evidence.get("chapter_id")
+        if chapter_id is not None and chapter_id not in chapter_ids:
+            errors.append(f"证据 chapter_id {chapter_id} 不在当前上下文")
+        span = evidence.get("source_span")
+        if isinstance(span, dict):
+            if not any(
+                ex.get("source_span", {}).get("start", -1) <= span.get("start", -1)
+                and span.get("end", -1) <= ex.get("source_span", {}).get("end", -2)
+                for ex in excerpts
+            ):
+                errors.append("证据 source_span 不在任何摘录范围内")
+        excerpt_hash = evidence.get("excerpt_hash")
+        if excerpt_hash and excerpt_hash not in {ex.get("excerpt_hash") for ex in excerpts}:
+            errors.append("证据 excerpt_hash 与摘录不一致")
+        if not quote and not event_id and not chapter_id and not isinstance(span, dict):
+            errors.append("证据没有任何可验证维度（quote/event_id/chapter/span 至少一项）")
+    elif evidence_type == "adaptation":
+        decision_id = evidence.get("adaptation_decision_id")
+        decisions = (context.get("adaptation_summary") or {}).get("decisions") or []
+        if not decision_id or not any(d.get("id") == decision_id for d in decisions):
+            errors.append(f"adaptation decision {decision_id!r} 不属于当前有效改编决策")
+    else:
+        errors.append("evidence_type 必须是 source 或 adaptation")
+    return errors
 
 
 def cmd_review(args) -> int:
@@ -375,19 +589,44 @@ def cmd_review(args) -> int:
     draft = active_artifact_path(project_dir, "script_draft", args.episode)
     if not draft or not draft.exists():
         raise CliError(f"第{args.episode}集没有草稿，请先 save-draft")
+    draft_version = active_version_id(project_dir, "script_draft", args.episode)
+    if not draft_version:
+        raise CliError("草稿缺少版本登记，拒绝审核")
     draft_text = draft.read_text(encoding="utf-8")
+    draft_meta = draft_meta_record(project_dir, args.episode, draft_version) or {}
+    if not draft_meta.get("draft_hash"):
+        raise CliError("草稿缺少 draft_hash 元数据，拒绝审核")
+    if sha256_text(draft_text) != draft_meta["draft_hash"]:
+        raise CliError("草稿内容与登记 draft_hash 不一致，拒绝审核")
     report = validate_script(draft_text, format_profile=config.get("script_format", "default-cn"), expected_episode=args.episode)
     if not report["ok"]:
         raise CliError("草稿格式未通过，请先修复：\n" + "\n".join(f"- {e['message']}" for e in report["errors"][:10]))
 
     context = _load_context_snapshot(project_dir, args.episode)
-    review_context = {**context, "script_draft": draft_text}
+    if draft_meta.get("context_hash") != context["context_hash"]:
+        raise CliError(
+            "草稿绑定的 context_hash 与当前上下文不一致，拒绝审核。"
+            "请先重新生成与草稿一致的上下文，或从不可变快照中选择正确版本。"
+        )
+    review_context = {
+        **context,
+        "script_draft": draft_text,
+        "draft_hash": draft_meta["draft_hash"],
+        "draft_version": draft_version,
+    }
     bundle = render_prompt_bundle(review_context, role="reviewer", config=config)
-    bundle += f"\n\n## 待审草稿\n{draft_text}\n"
+    bundle += (
+        f"\n\n## 审核绑定（必须原样输出到审核 JSON）\n"
+        f"context_hash: {context['context_hash']}\n"
+        f"draft_hash: {draft_meta['draft_hash']}\n"
+        f"draft_version: {draft_version}\n\n"
+        f"## 待审草稿\n{draft_text}\n"
+    )
     path = _review_bundle_path(project_dir, args.episode)
     ensure_dir(path.parent)
     path.write_text(bundle, encoding="utf-8")
     print(f"审核上下文包已写入：{path}（context_hash={context['context_hash']}）")
+    _print_pending_revisions(project_dir, args.episode)
     if args.api:
         from .model_adapter import call_generate
         from .model_adapter import parse_json_response
@@ -405,26 +644,64 @@ def cmd_review(args) -> int:
         ok, errors = validate(report_data, "review-report.schema.json")
         if not ok:
             raise CliError("模型审核输出未通过 Schema：" + "; ".join(errors))
-        _save_review(project_dir, args.episode, report_data, context["context_hash"])
+        _save_review(
+            project_dir,
+            args.episode,
+            report_data,
+            expected_context_hash=context["context_hash"],
+            expected_draft_version=draft_version,
+            expected_draft_hash=draft_meta["draft_hash"],
+        )
     else:
-        print("Host Agent Mode：请阅读该上下文包，按 review-report.schema.json 输出审核 JSON，然后用 save-review 保存。")
+        print(
+            "Host Agent Mode：请阅读该上下文包，按 review-report.schema.json 输出审核 JSON，"
+            "并原样携带 context_hash/draft_hash/draft_version，然后用 save-review 保存。"
+        )
     return 0
 
 
-def _save_review(project_dir: Path, episode: int, report_data: dict, context_hash: str) -> None:
+def _save_review(
+    project_dir: Path,
+    episode: int,
+    report_data: dict,
+    *,
+    expected_context_hash: str,
+    expected_draft_version: str,
+    expected_draft_hash: str,
+) -> None:
     report_data = _normalize_review_report(report_data)
     report_data["episode"] = episode
-    report_data["context_hash"] = context_hash
+    for key in ("context_hash", "draft_hash", "draft_version"):
+        if not report_data.get(key):
+            raise CliError(f"审核报告缺少 {key}，拒绝保存（不允许自动补齐）")
+    if report_data["context_hash"] != expected_context_hash:
+        raise CliError("审核报告 context_hash 与草稿绑定的上下文不一致，拒绝保存")
+    if report_data["draft_hash"] != expected_draft_hash:
+        raise CliError("审核报告 draft_hash 与草稿登记哈希不一致，拒绝保存")
+    if report_data["draft_version"] != expected_draft_version:
+        raise CliError("审核报告 draft_version 与草稿版本不一致，拒绝保存")
+    context = _load_context_snapshot_by_hash(project_dir, episode, expected_context_hash)
     ensure_valid(report_data, "review-report.schema.json")
     for issue in report_data.get("issues", []) or []:
-        if issue.get("severity") == "error" and not (issue.get("source_evidence") or issue.get("adaptation_basis")):
-            raise CliError(f"error 问题 {issue.get('id')} 缺少 source_evidence 或 adaptation_basis，拒绝保存")
-    target_dir = project_dir / "artifacts" / "reviews"
-    ensure_dir(target_dir)
-    target = target_dir / f"ep{episode:03d}_review.json"
-    atomic_write_json(target, report_data)
-    record_artifact(project_dir, "review", target, episode=episode, source="ai", status="approved")
-    print(f"审核报告已保存：{target}")
+        evidence_errors = _validate_issue_evidence(issue, context)
+        if evidence_errors:
+            raise CliError(f"error 问题 {issue.get('id')} 证据未通过验证：\n" + "\n".join(f"- {e}" for e in evidence_errors))
+    report_data["verdict"] = _normalize_verdict(report_data.get("verdict"), report_data.get("issues"))
+    result = commit_artifact(
+        project_dir,
+        "review",
+        content=report_data,
+        episode=episode,
+        source="ai",
+        status="approved",
+        ext="json",
+        meta={
+            "context_hash": expected_context_hash,
+            "draft_hash": expected_draft_hash,
+            "draft_version": expected_draft_version,
+        },
+    )
+    print(f"审核报告已保存：{result['path']}（{result['version']}）")
     print(f"结论：{report_data.get('verdict')} | {report_data.get('summary')}")
     print(f"问题数：{len(report_data.get('issues', []))}")
 
@@ -527,13 +804,13 @@ def _normalize_review_report(data: dict) -> dict:
             "category": category,
             "problem": str(issue.get("problem") or issue.get("detail") or "").strip(),
         }
-        for key in ("location", "source_evidence", "adaptation_basis", "fix"):
+        for key in ("location", "source_evidence", "adaptation_basis", "fix", "evidence"):
             value = issue.get(key)
             if value not in (None, ""):
                 item[key] = value
-        if item["severity"] == "error" and not (item.get("source_evidence") or item.get("adaptation_basis")):
-            item["severity"] = "warning"
-            item["problem"] = item["problem"] + "（原 error 缺少证据，自动降级为 warning）"
+        _normalize_issue_evidence(item)
+        if item["severity"] == "error" and item.get("evidence") is None:
+            item["problem"] = item["problem"] + "（error 缺少证据，将在保存时拒绝）"
         if item["problem"]:
             normalized.append(item)
     data["issues"] = normalized
@@ -546,10 +823,20 @@ def _normalize_review_report(data: dict) -> dict:
 def cmd_save_review(args) -> int:
     project_dir = _project_dir(args)
     report_data = _load_json_file(Path(args.file), "审核报告")
-    context = _load_context_snapshot(project_dir, args.episode)
-    if report_data.get("context_hash") and report_data["context_hash"] != context["context_hash"]:
-        raise CliError("审核报告 context_hash 与当前 episode_context 不一致，拒绝保存")
-    _save_review(project_dir, args.episode, report_data, context["context_hash"])
+    draft_version = active_version_id(project_dir, "script_draft", args.episode)
+    if not draft_version:
+        raise CliError("草稿缺少版本登记，拒绝保存审核")
+    draft_meta = draft_meta_record(project_dir, args.episode, draft_version) or {}
+    if not draft_meta.get("draft_hash") or not draft_meta.get("context_hash"):
+        raise CliError("草稿缺少 draft_hash/context_hash 元数据，拒绝保存审核")
+    _save_review(
+        project_dir,
+        args.episode,
+        report_data,
+        expected_context_hash=draft_meta["context_hash"],
+        expected_draft_version=draft_version,
+        expected_draft_hash=draft_meta["draft_hash"],
+    )
     return 0
 
 
@@ -562,11 +849,19 @@ def cmd_rewrite(args) -> int:
     if not review or not review.exists():
         raise CliError(f"第{args.episode}集没有审核报告，请先 review/save-review")
     review_data = _load_json_file(review, "审核报告")
-    context = _load_context_snapshot(project_dir, args.episode)
-    if review_data.get("context_hash") and review_data["context_hash"] != context["context_hash"]:
-        raise CliError("审核报告 context_hash 与当前 episode_context 不一致，拒绝重写")
-    draft = active_artifact_path(project_dir, "script_draft", args.episode)
-    draft_text = draft.read_text(encoding="utf-8") if draft and draft.exists() else ""
+    for key in ("context_hash", "draft_hash", "draft_version"):
+        if not review_data.get(key):
+            raise CliError(f"审核报告缺少 {key}，拒绝重写")
+    context = _load_context_snapshot_by_hash(project_dir, args.episode, review_data["context_hash"])
+    draft_path = artifact_version_path(project_dir, "script_draft", args.episode, review_data["draft_version"])
+    if not draft_path:
+        raise CliError(f"审核报告绑定的草稿版本 {review_data['draft_version']} 不存在，拒绝重写")
+    draft_text = draft_path.read_text(encoding="utf-8")
+    if sha256_text(draft_text) != review_data["draft_hash"]:
+        raise CliError("审核报告绑定的草稿哈希与文件内容不一致，拒绝重写")
+    bound_draft_meta = draft_meta_record(project_dir, args.episode, review_data["draft_version"]) or {}
+    if bound_draft_meta.get("automatic_rewrite"):
+        raise CliError("该草稿已是自动重写产物；自动重写次数有限，请人工修改后保存再继续")
     rewrite_context = {**context, "script_draft": draft_text, "review_report": review_data}
     bundle = render_prompt_bundle(rewrite_context, role="rewriter", config=config)
     bundle += f"\n\n## 当前草稿\n{draft_text}\n\n## 审核报告\n{json.dumps(review_data, ensure_ascii=False, indent=2)}\n"
@@ -574,6 +869,7 @@ def cmd_rewrite(args) -> int:
     ensure_dir(path.parent)
     path.write_text(bundle, encoding="utf-8")
     print(f"重写上下文包已写入：{path}（context_hash={context['context_hash']}）")
+    _print_pending_revisions(project_dir, args.episode)
     if args.api:
         from .model_adapter import call_generate
         from .common import strip_code_fence
@@ -588,7 +884,15 @@ def cmd_rewrite(args) -> int:
         text = strip_code_fence(text)
         temp_draft = project_dir / "state" / f"rewrite_ep{args.episode:03d}.txt"
         temp_draft.write_text(text, encoding="utf-8")
-        cmd_save_draft(argparse.Namespace(dir=str(project_dir), episode=args.episode, file=str(temp_draft)))
+        cmd_save_draft(
+            argparse.Namespace(
+                dir=str(project_dir),
+                episode=args.episode,
+                file=str(temp_draft),
+                context_hash=review_data["context_hash"],
+                automatic_rewrite=True,
+            )
+        )
         if args.draft_out:
             out = Path(args.draft_out).expanduser().resolve()
             ensure_dir(out.parent)
@@ -608,6 +912,14 @@ def cmd_approve(args) -> int:
         raise CliError(f"定稿文件不存在：{text}")
     path = apply_approved_script(project_dir, args.episode, text.read_text(encoding="utf-8"), source=args.source)
     continuity = load_continuity(project_dir)
+    from .revision_manager import mark_revisions_applied
+
+    mark_revisions_applied(
+        project_dir,
+        episode=args.episode,
+        applied_to_kind="approved_script",
+        applied_to_version=active_version_id(project_dir, "approved_script", args.episode) or "",
+    )
     print(f"定稿已保存：{path}")
     print(f"连续性已更新（version={continuity.get('version')}，extraction_mode={continuity.get('extraction_mode')}）")
     return 0
@@ -623,12 +935,116 @@ def cmd_apply_revision(args) -> int:
         instruction=args.instruction,
         source=args.source,
         requested_by=args.requested_by,
-        affects_future=args.affects_future,
+        affects_future=False if getattr(args, "no_affects_future", False) else args.affects_future,
+        direct_writer_instruction=bool(args.direct),
     )
-    if args.auto_approve:
+    if args.auto_approve or args.direct:
         approve_revision(project_dir, record["revision_id"])
         record["status"] = "approved"
     print(json.dumps(record, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_list_revisions(args) -> int:
+    project_dir = _project_dir(args)
+    from .revision_manager import list_revisions
+
+    records = list_revisions(project_dir, episode=args.episode)
+    print(json.dumps(records, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_approve_revision(args) -> int:
+    project_dir = _project_dir(args)
+    from .revision_manager import approve_revision
+
+    record = approve_revision(project_dir, args.revision_id)
+    if record is None:
+        raise CliError(f"找不到修改意见 {args.revision_id}")
+    print(json.dumps(record, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_reject_revision(args) -> int:
+    project_dir = _project_dir(args)
+    from .revision_manager import reject_revision
+
+    record = reject_revision(project_dir, args.revision_id)
+    if record is None:
+        raise CliError(f"找不到修改意见 {args.revision_id}")
+    print(json.dumps(record, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_revision_status(args) -> int:
+    project_dir = _project_dir(args)
+    from .revision_manager import list_revisions
+
+    for record in list_revisions(project_dir):
+        if record.get("revision_id") == args.revision_id:
+            print(json.dumps(record, ensure_ascii=False, indent=2))
+            return 0
+    raise CliError(f"找不到修改意见 {args.revision_id}")
+
+
+def cmd_extract_continuity(args) -> int:
+    """Host Agent Mode: render a continuity-delta extraction bundle."""
+    project_dir = _project_dir(args)
+    from .prompt_router import _stage_prompt
+    from .state_store import artifact_version_record
+
+    approved = active_artifact_path(project_dir, "approved_script", args.episode)
+    if not approved or not approved.exists():
+        raise CliError(f"第{args.episode}集没有定稿，请先 approve")
+    draft_version = active_version_id(project_dir, "approved_script", args.episode) or ""
+    record = artifact_version_record(project_dir, "approved_script", args.episode, draft_version) or {}
+    script_hash = record.get("content_hash") or sha256_text(approved.read_text(encoding="utf-8"))
+    script_text = approved.read_text(encoding="utf-8")
+    continuity = load_continuity(project_dir)
+    prompt = _stage_prompt("continuity_extract")
+    bundle = (
+        f"# 连续性提取（Host Agent Mode）\n"
+        f"- 集数：{args.episode}\n"
+        f"- draft_version：{draft_version}\n"
+        f"- script_hash：{script_hash}\n\n"
+        f"{prompt}\n\n"
+        f"## 当前连续性快照\n{json.dumps(continuity, ensure_ascii=False, indent=2)}\n\n"
+        f"## 当前定稿\n{script_text}\n\n"
+        "输出 continuity-delta.schema.json 兼容 JSON，extraction_mode 填 host_agent，"
+        "facts 每条必须带 fact_id/category/evidence_location。"
+    )
+    path = project_dir / "state" / "prompt_bundles" / f"ep{args.episode:03d}_continuity.md"
+    ensure_dir(path.parent)
+    path.write_text(bundle, encoding="utf-8")
+    print(f"连续性提取包已写入：{path}（script_hash={script_hash[:12]}）")
+    print("Host Agent Mode：请阅读该包，输出 delta JSON，然后用 save-continuity-delta 保存。")
+    return 0
+
+
+def cmd_save_continuity_delta(args) -> int:
+    project_dir = _project_dir(args)
+    from .continuity_manager import refresh_continuity, save_continuity_delta
+    from .state_store import artifact_version_record
+
+    delta = _load_json_file(Path(args.file), "连续性 delta")
+    draft_version = active_version_id(project_dir, "approved_script", args.episode)
+    if not draft_version:
+        raise CliError(f"第{args.episode}集没有定稿版本登记")
+    record = artifact_version_record(project_dir, "approved_script", args.episode, draft_version) or {}
+    script_hash = record.get("content_hash")
+    if not script_hash:
+        raise CliError("定稿缺少 content_hash，拒绝保存 delta")
+    path = save_continuity_delta(
+        project_dir,
+        episode=args.episode,
+        delta=delta,
+        script_hash=script_hash,
+        draft_version=draft_version,
+    )
+    continuity = refresh_continuity(project_dir)
+    info = continuity.get("episode_extraction", {}).get(str(args.episode), {})
+    print(f"连续性 delta 已保存：{path}")
+    print(f"该集提取模式：{info.get('mode')}，完整：{info.get('complete')}")
     return 0
 
 
@@ -658,10 +1074,23 @@ def cmd_forecast_duration(args) -> int:
         scripts,
         dialogue_chars_per_minute=(config.get("advisory_timing") or {}).get("dialogue_chars_per_minute"),
     )
-    target_dir = project_dir / "artifacts" / "duration_forecast"
-    ensure_dir(target_dir)
-    atomic_write_json(target_dir / "forecast.json", forecast)
-    (target_dir / "forecast.md").write_text(render_duration_report(forecast), encoding="utf-8")
+    result = commit_artifact(
+        project_dir,
+        "duration_forecast",
+        content=forecast,
+        source="ai",
+        status="approved",
+        ext="json",
+    )
+    commit_artifact(
+        project_dir,
+        "duration_forecast_md",
+        content=render_duration_report(forecast),
+        source="ai",
+        status="approved",
+        ext="md",
+    )
+    print(f"时长预估已保存：{result['path']}（{result['version']}）")
     print(render_duration_report(forecast))
     return 0
 
@@ -816,6 +1245,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dir", required=True)
     p.add_argument("--outline-json", required=True)
     p.add_argument("--outline-md")
+    p.add_argument("--replace", action="store_true", help="显式整表替换集纲（默认按集 upsert 并保留未出现集数）")
     p.set_defaults(func=cmd_save_episode_outline)
 
     p = sub.add_parser("get-episode-context")
@@ -830,6 +1260,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dir", required=True)
     p.add_argument("--episode", type=int, required=True)
     p.add_argument("--file", required=True)
+    p.add_argument("--automatic-rewrite", action="store_true", default=False, help=argparse.SUPPRESS)
+    p.add_argument("--context-hash", default=None, help=argparse.SUPPRESS)
     p.set_defaults(func=cmd_save_draft)
 
     p = sub.add_parser("review")
@@ -865,8 +1297,36 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--source", default="cli")
     p.add_argument("--requested-by", default="writer")
     p.add_argument("--affects-future", dest="affects_future", action="store_true", default=None)
+    p.add_argument("--no-affects-future", dest="no_affects_future", action="store_true", default=False)
     p.add_argument("--auto-approve", action="store_true")
+    p.add_argument("--direct", action="store_true", help="编剧明确直接指令，创建即 approved")
     p.set_defaults(func=cmd_apply_revision)
+
+    p = sub.add_parser("list-revisions")
+    p.add_argument("--dir", required=True)
+    p.add_argument("--episode", type=int)
+    p.set_defaults(func=cmd_list_revisions)
+
+    for name, func in (
+        ("approve-revision", cmd_approve_revision),
+        ("reject-revision", cmd_reject_revision),
+        ("revision-status", cmd_revision_status),
+    ):
+        p = sub.add_parser(name)
+        p.add_argument("--dir", required=True)
+        p.add_argument("--revision-id", required=True)
+        p.set_defaults(func=func)
+
+    p = sub.add_parser("extract-continuity")
+    p.add_argument("--dir", required=True)
+    p.add_argument("--episode", type=int, required=True)
+    p.set_defaults(func=cmd_extract_continuity)
+
+    p = sub.add_parser("save-continuity-delta")
+    p.add_argument("--dir", required=True)
+    p.add_argument("--episode", type=int, required=True)
+    p.add_argument("--file", required=True)
+    p.set_defaults(func=cmd_save_continuity_delta)
 
     p = sub.add_parser("refresh-continuity")
     p.add_argument("--dir", required=True)

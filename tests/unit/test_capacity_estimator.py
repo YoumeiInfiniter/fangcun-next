@@ -88,7 +88,7 @@ class CapacityEstimatorTests(unittest.TestCase):
         forecast = save_forecast(self.project_dir)
         path = active_artifact_path(self.project_dir, "capacity_forecast")
         self.assertIsNotNone(path)
-        md = path.parent / "forecast.md"
+        md = active_artifact_path(self.project_dir, "capacity_forecast_md")
         self.assertTrue(md.exists())
         self.assertIn("不阻断", md.read_text(encoding="utf-8"))
         self.assertEqual(forecast["advisory_only"], True)

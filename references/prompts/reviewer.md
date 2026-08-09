@@ -23,14 +23,16 @@
 - warning：时长偏差、节奏可优化、台词可更有性格、类型表达不足；
 - suggestion：纯创意偏好。
 
-时长超出默认不得判为 error。每个 error 必须给出 source_evidence 或 adaptation_basis；给不出证据的问题写成 warning 并说明“证据不足”。
+时长超出默认不得判为 error。
 
-输出字段（固定）：
+输出字段（固定，前三项必须与“审核绑定”中的值完全一致）：
 
 ```json
 {
   "episode": 1,
   "context_hash": "与上下文一致",
+  "draft_hash": "与审核绑定一致",
+  "draft_version": "v001",
   "verdict": "pass | warning | blocked",
   "summary": "一句话结论",
   "issues": [
@@ -40,7 +42,14 @@
       "category": "source_fidelity | outline_adherence | causality | character_knowledge | dialogue_pairing | character_voice | previous_episode_bridge | ending_hook | continuity | shootability | timing | format",
       "location": "场次或台词位置",
       "problem": "问题描述",
-      "source_evidence": "原文引用",
+      "evidence": {
+        "evidence_type": "source",
+        "event_id": "CH001-E03",
+        "chapter_id": 1,
+        "source_span": {"start": 10, "end": 80},
+        "excerpt_hash": "摘录哈希（可选）",
+        "quote": "必须是 episode_context 摘录中逐字存在的原句"
+      },
       "fix": "修复方向"
     }
   ],
@@ -48,4 +57,5 @@
 }
 ```
 
+error 必须提供 evidence；quote 必须与上下文摘录逐字一致，不得写“原文：”前缀或任意字符串。
 只输出 review-report.schema.json 规定的 JSON，不输出其他说明、不输出 ```json 代码围栏、不包裹额外对象。

@@ -54,6 +54,7 @@ def create_revision(
     requested_by: str = "writer",
     affects_future: bool | None = None,
     scope: str | None = None,
+    direct_writer_instruction: bool = False,
 ) -> dict:
     impact = analyze_impact(instruction)
     record = {
@@ -65,7 +66,7 @@ def create_revision(
         "scope": scope or impact["scope"],
         "affects_future": impact["affects_future"] if affects_future is None else affects_future,
         "impact_analysis": impact,
-        "status": "pending",
+        "status": "approved" if direct_writer_instruction else "pending",
         "created_at": now_iso(),
     }
     ensure_valid(record, "revision-request.schema.json")
@@ -131,3 +132,43 @@ def list_revisions(project_dir: Path, episode: int | None = None) -> list[dict]:
     if episode is not None:
         records = [r for r in records if r.get("episode") == episode]
     return records
+
+
+def mark_revisions_applied(
+    project_dir: Path,
+    *,
+    episode: int,
+    applied_to_kind: str,
+    applied_to_version: str,
+) -> int:
+    """Mark approved revisions of this episode as applied to a concrete version."""
+    path = project_dir / "state" / "revisions.jsonl"
+    records = _revisions(project_dir)
+    changed = 0
+    for record in records:
+        if record.get("episode") == episode and record.get("status") == "approved":
+            record["status"] = "applied"
+            record["applied_to"] = {"kind": applied_to_kind, "version": applied_to_version}
+            record["updated_at"] = now_iso()
+            changed += 1
+            append_writer_override(
+                project_dir,
+                {
+                    "revision_id": record["revision_id"],
+                    "episode": record["episode"],
+                    "source": record["source"],
+                    "requested_by": record.get("requested_by", "writer"),
+                    "instruction": record["instruction"],
+                    "scope": record.get("scope", "local_episode"),
+                    "affects_future": record.get("affects_future", False),
+                    "status": "applied",
+                    "applied_to": record["applied_to"],
+                    "created_at": record["created_at"],
+                },
+            )
+    if changed:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as fh:
+            for record in records:
+                fh.write(__import__("json").dumps(record, ensure_ascii=False) + "\n")
+    return changed

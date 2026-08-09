@@ -7,7 +7,7 @@ from pathlib import Path
 from scripts.context_builder import (
     ContextIncompleteError,
     build_episode_context,
-    context_path,
+    current_context_path,
     verify_context_hash,
 )
 from scripts.state_store import (
@@ -149,7 +149,7 @@ class ContextBuilderTests(unittest.TestCase):
         ok, expected = verify_context_hash(context)
         self.assertTrue(ok)
         self.assertEqual(context["context_hash"], expected)
-        self.assertTrue(context_path(self.project_dir, 1).exists())
+        self.assertTrue(current_context_path(self.project_dir, 1).exists())
 
     def test_reviewer_consumes_same_snapshot_hash(self):
         writer_ctx = build_episode_context(self.project_dir, 1, save=False)
@@ -162,7 +162,7 @@ class ContextBuilderTests(unittest.TestCase):
             build_episode_context(self.project_dir, 99)
         self.assertTrue(any("没有" in p for p in ctx.exception.problems))
 
-    def test_must_keep_without_evidence_produces_warning(self):
+    def test_must_keep_without_evidence_blocks_context(self):
         outlines = __import__("json").loads(
             (self.project_dir / "artifacts" / "episode_outline" / "episode_outlines.json").read_text(encoding="utf-8")
         )
@@ -170,9 +170,9 @@ class ContextBuilderTests(unittest.TestCase):
         path = self.project_dir / "artifacts" / "episode_outline" / "episode_outlines.json"
         path.write_text(__import__("json").dumps(outlines, ensure_ascii=False), encoding="utf-8")
         record_artifact(self.project_dir, "episode_outline", path, source="ai", status="approved")
-        context = build_episode_context(self.project_dir, 1)
-        warnings = context["completeness"]["warnings"]
-        self.assertTrue(any("完全不存在的事件" in w for w in warnings))
+        with self.assertRaises(ContextIncompleteError) as ctx:
+            build_episode_context(self.project_dir, 1)
+        self.assertTrue(any("完全不存在的事件" in p for p in ctx.exception.problems))
 
     def test_previous_approved_script_and_hook_are_included(self):
         self._approve_episode_one()

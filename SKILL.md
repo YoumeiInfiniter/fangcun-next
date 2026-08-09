@@ -51,7 +51,9 @@ description: |
 | 定向重写 | `rewrite --episode N` → 读重写包 → `save-draft --episode N --file <draft2.txt>` → 重新审核 |
 | 编剧定稿 | `approve --episode N --file <approved.txt>` |
 | 修改意见 | `apply-revision --episode N --instruction "..."` |
+| 查看/处理修改意见 | `list-revisions`、`approve-revision --revision-id`、`reject-revision --revision-id`、`revision-status` |
 | 连续性 | `refresh-continuity --dir <project>` |
+| 连续性提取（Host Agent） | `extract-continuity --episode N` → `save-continuity-delta --episode N --file <delta.json>` |
 | 时长预估 | `forecast-duration --dir <project>` |
 | 进度 | `status --dir <project>` |
 | 导出 | `export --dir <project> [--xml]` |
@@ -84,10 +86,15 @@ API 模式：在 `review` / `rewrite` 后加 `--api`，由配置的模型执行�
 
 ## 降级与诚实
 
-- 未配置 API 时：Host Agent Mode 直接写作/审核/重写，连续性以确定性提取
-  （`extraction_mode: deterministic`）落盘；不允许把格式校验或本地裁决冒充
-  系统模型审核。
-- 审核的 error 级问题必须有 `source_evidence` 或 `adaptation_basis`，否则拒绝保存。
+- 未配置 API 时：Host Agent Mode 直接写作/审核/重写；连续性可通过
+  `extract-continuity` + `save-continuity-delta` 由宿主 Agent 提取结构化 delta；
+  未提供 delta 时以确定性提取（`extraction_mode: deterministic`）降级并在
+  `degraded_episodes` 中显式列出；不允许把格式校验或本地裁决冒充系统模型审核。
+- 审核报告必须显式携带 `context_hash`、`draft_hash`、`draft_version`，缺任一拒绝保存，
+  不允许自动补齐；草稿绑定生成它的上下文快照，重写只能消费审核报告实际绑定的草稿版本。
+- 审核的 error 级问题必须有可在绑定 `episode_context` 中验证的结构化证据
+  （`evidence_type: source|adaptation`）；任意字符串或不存在的事件/章节/span/quote
+  引用拒绝保存，无证据 error 不自动降级。
 - 上下文缺少原文证据且无改编依据时硬阻断，让编剧决定，不允许模型自由补写。
 
 ## 安全边界
@@ -110,4 +117,3 @@ API 模式：在 `review` / `rewrite` 后加 `--api`，由配置的模型执行�
 - `references/platform-adapters.md`：平台能力探测与 P2 适配边界；
 - `references/schemas/`：全部机器可读数据契约；
 - `references/prompts/`：分层 Prompt（系统底线、Writer、Reviewer、Rewriter、各阶段）。
-

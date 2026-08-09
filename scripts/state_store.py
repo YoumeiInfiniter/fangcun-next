@@ -21,11 +21,15 @@ from typing import Any
 
 from .common import (
     atomic_write_json,
+    atomic_write_text,
     jsonl_append,
     now_iso,
     read_json,
     read_jsonl,
     relpath_display,
+    sha256_text,
+    ensure_dir,
+    canonical_json,
 )
 
 
@@ -150,6 +154,96 @@ def artifact_key(kind: str, episode: int | None = None) -> str:
     return f"{kind}:{episode}" if episode is not None else kind
 
 
+def commit_artifact(
+    project_dir: Path,
+    kind: str,
+    *,
+    content,
+    episode: int | None = None,
+    source: str = "ai",
+    status: str = "draft",
+    ext: str | None = None,
+    meta: dict | None = None,
+    note: str = "",
+    parent_version: str | None = None,
+) -> dict:
+    """Persist one immutable artifact version (idempotent by content hash).
+
+    Every version is written to a dedicated immutable file under
+    artifacts/<kind>/versions/. active_versions.json only stores the current
+    pointer. Identical content never creates a duplicate version.
+    """
+    if isinstance(content, (dict, list)):
+        text = canonical_json(content) + "\n"
+        ext = ext or "json"
+    elif isinstance(content, str):
+        text = content
+        ext = ext or "txt"
+    else:
+        raise TypeError(f"artifact content 必须是 str/dict/list，收到 {type(content).__name__}")
+    content_hash = sha256_text(text)
+
+    manifest = load_manifest(project_dir)
+    key = artifact_key(kind, episode)
+    entry = manifest["artifacts"].setdefault(key, {"active_version": None, "versions": []})
+
+    # Idempotency: identical content reuses the existing version.
+    for existing in entry["versions"]:
+        if existing.get("content_hash") == content_hash:
+            entry["active_version"] = existing["version"]
+            save_manifest(project_dir, manifest)
+            versions = load_active_versions(project_dir)
+            versions[key] = existing["path"]
+            save_active_versions(project_dir, versions)
+            return {
+                "version": existing["version"],
+                "path": project_dir / existing["path"],
+                "content_hash": content_hash,
+                "created": False,
+            }
+
+    version = f"v{len(entry['versions']) + 1:03d}"
+    versions_dir = project_dir / "artifacts" / kind / "versions"
+    if episode is not None:
+        versions_dir = versions_dir / f"ep{episode:03d}"
+    ensure_dir(versions_dir)
+    filename = f"{kind}_{version}_{content_hash[:8]}.{ext}"
+    path = versions_dir / filename
+    if ext == "json":
+        data = content if isinstance(content, (dict, list)) else text
+        atomic_write_json(path, data)
+    else:
+        atomic_write_text(path, text)
+
+    previous_active = entry.get("active_version")
+    record = {
+        "version": version,
+        "path": relpath_display(path, project_dir),
+        "content_hash": content_hash,
+        "status": status,
+        "source": source,
+        "note": note,
+        "created_at": now_iso(),
+        "parent_version": parent_version or previous_active,
+        "supersedes": previous_active,
+    }
+    if meta:
+        record["meta"] = meta
+    entry["versions"].append(record)
+    entry["active_version"] = version
+    save_manifest(project_dir, manifest)
+
+    versions = load_active_versions(project_dir)
+    versions[key] = record["path"]
+    save_active_versions(project_dir, versions)
+    return {
+        "version": version,
+        "path": path,
+        "content_hash": content_hash,
+        "created": True,
+    }
+
+
 def record_artifact(
     project_dir: Path,
     kind: str,
@@ -161,29 +255,25 @@ def record_artifact(
     version: str | None = None,
     note: str = "",
 ) -> str:
-    """Register a new version and point active_versions at it."""
-    key = artifact_key(kind, episode)
-    version = version or f"v{len(load_manifest(project_dir).get('artifacts', {}).get(key, {}).get('versions', [])) + 1:03d}"
-    record = {
-        "version": version,
-        "path": relpath_display(path, project_dir),
-        "status": status,
-        "source": source,
-        "note": note,
-        "created_at": now_iso(),
-    }
-    manifest = load_manifest(project_dir)
-    entry = manifest["artifacts"].setdefault(
-        key, {"active_version": None, "versions": []}
+    """Backwards-compatible wrapper: register an existing file's content."""
+    if not path.exists():
+        raise FileNotFoundError(f"artifact 文件不存在: {path}")
+    ext = path.suffix.lstrip(".")
+    if ext == "json":
+        content = read_json(path)
+    else:
+        content = path.read_text(encoding="utf-8")
+    result = commit_artifact(
+        project_dir,
+        kind,
+        content=content,
+        episode=episode,
+        source=source,
+        status=status,
+        ext=ext,
+        note=note,
     )
-    entry["versions"].append(record)
-    entry["active_version"] = version
-    save_manifest(project_dir, manifest)
-
-    versions = load_active_versions(project_dir)
-    versions[key] = record["path"]
-    save_active_versions(project_dir, versions)
-    return version
+    return result["version"]
 
 
 def active_artifact_path(project_dir: Path, kind: str, episode: int | None = None) -> Path | None:
@@ -191,6 +281,58 @@ def active_artifact_path(project_dir: Path, kind: str, episode: int | None = Non
     versions = load_active_versions(project_dir)
     value = versions.get(key)
     return (project_dir / value).resolve() if value else None
+
+
+def active_version_id(project_dir: Path, kind: str, episode: int | None = None) -> str | None:
+    key = artifact_key(kind, episode)
+    return load_manifest(project_dir).get("artifacts", {}).get(key, {}).get("active_version")
+
+
+def artifact_version_path(
+    project_dir: Path,
+    kind: str,
+    episode: int | None,
+    version: str,
+) -> Path | None:
+    key = artifact_key(kind, episode)
+    for record in load_manifest(project_dir).get("artifacts", {}).get(key, {}).get("versions", []):
+        if record.get("version") == version:
+            path = project_dir / record["path"]
+            return path if path.exists() else None
+    return None
+
+
+def artifact_version_record(
+    project_dir: Path,
+    kind: str,
+    episode: int | None,
+    version: str,
+) -> dict | None:
+    key = artifact_key(kind, episode)
+    for record in load_manifest(project_dir).get("artifacts", {}).get(key, {}).get("versions", []):
+        if record.get("version") == version:
+            return record
+    return None
+
+
+def read_artifact_version(
+    project_dir: Path,
+    kind: str,
+    episode: int | None,
+    version: str,
+):
+    """Read the immutable content of a specific version (json → dict)."""
+    path = artifact_version_path(project_dir, kind, episode, version)
+    if not path:
+        raise KeyError(f"{kind}:{episode} 版本 {version} 不存在")
+    if path.suffix == ".json":
+        return read_json(path)
+    return path.read_text(encoding="utf-8")
+
+
+def draft_meta_record(project_dir: Path, episode: int, version: str) -> dict | None:
+    record = artifact_version_record(project_dir, "script_draft", episode, version)
+    return (record or {}).get("meta")
 
 
 def artifact_versions(project_dir: Path, kind: str, episode: int | None = None) -> list[dict]:

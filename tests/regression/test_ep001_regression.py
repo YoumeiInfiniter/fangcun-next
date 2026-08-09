@@ -44,7 +44,10 @@ class Ep001RegressionTests(unittest.TestCase):
         ok, errors = validate(self.review, "review-report.schema.json")
         self.assertTrue(ok, errors)
         for issue in self.review["issues"]:
-            self.assertTrue(issue.get("source_evidence"), issue["id"])
+            evidence = issue.get("evidence")
+            self.assertIsInstance(evidence, dict)
+            self.assertIn(evidence.get("evidence_type"), ("source", "adaptation"))
+            self.assertTrue(evidence.get("quote") or evidence.get("adaptation_decision_id"), issue["id"])
 
     def test_context_builder_exposes_evidence_for_ep001(self):
         import scripts.context_builder as cb

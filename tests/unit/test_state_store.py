@@ -6,6 +6,7 @@ from pathlib import Path
 
 from scripts.state_store import (
     active_artifact_path,
+    artifact_version_path,
     append_writer_override,
     config_path,
     init_project,
@@ -59,10 +60,15 @@ class StateStoreTests(unittest.TestCase):
         draft.parent.mkdir(parents=True)
         draft.write_text("第1集：测试\n", encoding="utf-8")
         v1 = record_artifact(self.project_dir, "script_draft", draft, episode=1, source="ai", status="draft")
+        # Same content must be idempotent (no duplicate version).
+        v1_again = record_artifact(self.project_dir, "script_draft", draft, episode=1, source="ai", status="draft")
+        self.assertEqual(v1_again, "v001")
+        draft.write_text("第1集：修改版\n", encoding="utf-8")
         v2 = record_artifact(self.project_dir, "script_draft", draft, episode=1, source="ai", status="draft")
         self.assertEqual(v1, "v001")
         self.assertEqual(v2, "v002")
-        self.assertEqual(active_artifact_path(self.project_dir, "script_draft", 1), draft.resolve())
+        active = active_artifact_path(self.project_dir, "script_draft", 1)
+        self.assertEqual(active.read_text(encoding="utf-8"), "第1集：修改版\n")
         manifest = load_manifest(self.project_dir)
         self.assertEqual(len(manifest["artifacts"]["script_draft:1"]["versions"]), 2)
 
@@ -96,8 +102,14 @@ class StateStoreTests(unittest.TestCase):
         record_artifact(self.project_dir, "episode_outline", p1)
         record_artifact(self.project_dir, "episode_outline", p2)
         versions = load_active_versions(self.project_dir)
-        self.assertEqual(versions["episode_outline"], "b.txt")
-        self.assertEqual(len(load_manifest(self.project_dir)["artifacts"]["episode_outline"]["versions"]), 2)
+        active = active_artifact_path(self.project_dir, "episode_outline")
+        self.assertEqual(active.read_text(encoding="utf-8"), "y")
+        manifest = load_manifest(self.project_dir)
+        self.assertEqual(len(manifest["artifacts"]["episode_outline"]["versions"]), 2)
+        v1_path = artifact_version_path(self.project_dir, "episode_outline", None, "v001")
+        v2_path = artifact_version_path(self.project_dir, "episode_outline", None, "v002")
+        self.assertEqual(v1_path.read_text(encoding="utf-8"), "x")
+        self.assertEqual(v2_path.read_text(encoding="utf-8"), "y")
 
     def test_load_config_merges_local_model_config(self):
         init_project(self.project_dir, make_config())

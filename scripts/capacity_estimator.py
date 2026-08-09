@@ -11,7 +11,7 @@ from typing import Any
 
 from .common import atomic_write_json, ensure_dir, now_iso
 from .schema_validate import ensure_valid
-from .state_store import active_artifact_path, load_config, record_artifact
+from .state_store import active_artifact_path, commit_artifact, load_config
 
 
 IMPORTANCE_DEFAULTS = {
@@ -115,12 +115,25 @@ def save_forecast(project_dir: Path, forecast: dict | None = None, *, source: st
     config = load_config(project_dir)
     events = _load_events(project_dir)
     forecast = forecast or compute_forecast(config, events)
-    path = project_dir / "artifacts" / "capacity_forecast" / "forecast.json"
-    ensure_dir(path.parent)
-    atomic_write_json(path, forecast)
-    md_path = path.parent / "forecast.md"
-    md_path.write_text(render_forecast_markdown(forecast), encoding="utf-8")
-    record_artifact(project_dir, "capacity_forecast", path, source=source, status="approved", note="advisory only")
+    result = commit_artifact(
+        project_dir,
+        "capacity_forecast",
+        content=forecast,
+        source=source,
+        status="approved",
+        ext="json",
+        note="advisory only",
+    )
+    md_result = commit_artifact(
+        project_dir,
+        "capacity_forecast_md",
+        content=render_forecast_markdown(forecast),
+        source=source,
+        status="approved",
+        ext="md",
+    )
+    if md_result["created"]:
+        print(f"容量预估 Markdown：{md_result['path']}")
     return forecast
 
 
@@ -164,4 +177,3 @@ def render_forecast_markdown(forecast: dict) -> str:
         "编剧可以接受或忽略以上任何推荐；超出预期时仅提示，不自动回退。",
     ]
     return "\n".join(lines) + "\n"
-
