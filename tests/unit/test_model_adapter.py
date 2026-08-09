@@ -6,6 +6,7 @@ import unittest
 from scripts.model_adapter import (
     ModelUnavailableError,
     build_payload,
+    parse_json_response,
     resolve_api_key,
 )
 
@@ -28,6 +29,31 @@ class ModelAdapterTests(unittest.TestCase):
     def test_build_payload_defaults_model(self):
         payload = build_payload(system_prompt="s", user_context="u", model_config=None)
         self.assertTrue(payload["model"])
+
+    def test_build_payload_supports_deepseek_output_params(self):
+        payload = build_payload(
+            system_prompt="s",
+            user_context="u",
+            model_config={
+                "model": "deepseek-v4-flash",
+                "output_token_param": "max_completion_tokens",
+                "max_output_tokens": 16000,
+                "disable_thinking": True,
+            },
+        )
+        self.assertEqual(payload["max_completion_tokens"], 16000)
+        self.assertNotIn("max_tokens", payload)
+        self.assertEqual(payload["thinking"], {"type": "disabled"})
+
+    def test_parse_json_response_handles_code_fence_and_wrapper(self):
+        data = parse_json_response('```json\n{"review_report": {"verdict": "pass"}}\n```')
+        self.assertEqual(data["review_report"]["verdict"], "pass")
+        data2 = parse_json_response('前置说明 {"episode": 1} 后置说明')
+        self.assertEqual(data2["episode"], 1)
+
+    def test_parse_json_response_raises_on_invalid(self):
+        with self.assertRaises(ValueError):
+            parse_json_response("这不是 JSON")
 
     def test_resolve_api_key_falls_back_to_deepseek_env(self):
         os.environ["DEEPSEEK_API_KEY"] = "sk-test-deepseek"

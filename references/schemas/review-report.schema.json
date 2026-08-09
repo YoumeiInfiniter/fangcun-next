@@ -15,7 +15,7 @@
         "properties": {
           "id": {"type": "string", "minLength": 1},
           "severity": {"type": "string", "enum": ["error", "warning", "suggestion"]},
-          "category": {"type": "string", "enum": [
+            "category": {"type": "string", "enum": [
             "source_fidelity",
             "outline_adherence",
             "causality",
@@ -27,7 +27,8 @@
             "continuity",
             "shootability",
             "timing",
-            "format"
+            "format",
+            "other"
           ]},
           "location": {"type": "string"},
           "problem": {"type": "string", "minLength": 1},
@@ -51,4 +52,3 @@
   },
   "additionalProperties": true
 }
-

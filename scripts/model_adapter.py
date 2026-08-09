@@ -11,6 +11,8 @@ Without credentials the runtime MUST NOT pretend an API review happened.
 from __future__ import annotations
 
 import os
+import json
+import re
 from typing import Any
 
 
@@ -45,15 +47,20 @@ def build_payload(
 ) -> dict:
     model_config = model_config or {}
     model = model_config.get("model") or os.environ.get("FANGCUN_MODEL", "gpt-4.1-mini")
-    return {
+    output_param = model_config.get("output_token_param", "max_tokens")
+    output_value = model_config.get("max_output_tokens") or max_tokens
+    payload = {
         "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_context},
         ],
         "temperature": temperature,
-        "max_tokens": max_tokens,
     }
+    payload[output_param] = output_value
+    if model_config.get("disable_thinking"):
+        payload["thinking"] = {"type": "disabled"}
+    return payload
 
 
 def call_generate(
@@ -90,6 +97,36 @@ def call_generate(
     response.raise_for_status()
     data = response.json()
     try:
-        return data["choices"][0]["message"]["content"]
+        message = data["choices"][0]["message"]
+        content = message.get("content") or ""
+        if not content.strip():
+            reasoning = (message.get("reasoning_content") or "").strip()
+            if reasoning:
+                raise RuntimeError(
+                    "模型只返回了推理内容（reasoning_content），正文为空。"
+                    "请增大 max_tokens，或改用非推理模型。"
+                )
+            raise RuntimeError("模型返回空正文")
+        return content
     except (KeyError, IndexError, TypeError) as exc:
         raise RuntimeError(f"模型响应格式不兼容: {exc}") from exc
+
+
+def parse_json_response(text: str) -> Any:
+    """Extract a JSON object from model output (handles code fences)."""
+    text = (text or "").strip()
+    fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", text, re.DOTALL)
+    if fence:
+        text = fence.group(1).strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            return json.loads(text[start : end + 1])
+        except json.JSONDecodeError:
+            pass
+    raise ValueError("模型输出不是合法 JSON，无法解析")

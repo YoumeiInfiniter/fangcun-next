@@ -25,5 +25,27 @@
 
 时长超出默认不得判为 error。每个 error 必须给出 source_evidence 或 adaptation_basis；给不出证据的问题写成 warning 并说明“证据不足”。
 
-只输出 review-report.schema.json 规定的 JSON，不输出其他说明。
+输出字段（固定）：
 
+```json
+{
+  "episode": 1,
+  "context_hash": "与上下文一致",
+  "verdict": "pass | warning | blocked",
+  "summary": "一句话结论",
+  "issues": [
+    {
+      "id": "DIALOGUE-001",
+      "severity": "error | warning | suggestion",
+      "category": "source_fidelity | outline_adherence | causality | character_knowledge | dialogue_pairing | character_voice | previous_episode_bridge | ending_hook | continuity | shootability | timing | format",
+      "location": "场次或台词位置",
+      "problem": "问题描述",
+      "source_evidence": "原文引用",
+      "fix": "修复方向"
+    }
+  ],
+  "timing_advisory": {"estimated_seconds": 0, "preferred_seconds": [90, 130], "blocking": false}
+}
+```
+
+只输出 review-report.schema.json 规定的 JSON，不输出其他说明、不输出 ```json 代码围栏、不包裹额外对象。

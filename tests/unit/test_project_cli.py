@@ -154,7 +154,7 @@ class ProjectCliTests(unittest.TestCase):
         self.run_cli("export", "--dir", str(self.project_dir))
         self.assertTrue((self.project_dir / "export" / "export.txt").exists())
 
-    def test_review_error_without_evidence_is_rejected(self):
+    def test_review_error_without_evidence_is_downgraded_to_warning(self):
         self.run_cli("init", "--dir", str(self.project_dir), "--config", str(self.config_file))
         self.run_cli("ingest-source", "--dir", str(self.project_dir), "--file", str(self.novel))
         self.run_cli("save-events", "--dir", str(self.project_dir), "--file", str(self.events))
@@ -169,7 +169,12 @@ class ProjectCliTests(unittest.TestCase):
         }
         bad = self.root / "bad_review.json"
         bad.write_text(json.dumps(review, ensure_ascii=False), encoding="utf-8")
-        self.run_cli("save-review", "--dir", str(self.project_dir), "--episode", "1", "--file", str(bad), expect=1)
+        self.run_cli("save-review", "--dir", str(self.project_dir), "--episode", "1", "--file", str(bad))
+        saved = json.loads(
+            (self.project_dir / "artifacts" / "reviews" / "ep001_review.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(saved["issues"][0]["severity"], "warning")
+        self.assertIn("自动降级为 warning", saved["issues"][0]["problem"])
 
     def test_revision_affects_future_context(self):
         self.run_cli("init", "--dir", str(self.project_dir), "--config", str(self.config_file))
@@ -225,6 +230,15 @@ class ProjectCliTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.run_cli("check-api", "--dir", str(self.project_dir), expect=1)
+
+    def test_review_verdict_normalization_maps_needs_revision(self):
+        from scripts.project_cli import _normalize_verdict
+
+        self.assertEqual(_normalize_verdict("needs_revision", []), "blocked")
+        self.assertEqual(_normalize_verdict("通过", []), "pass")
+        self.assertEqual(_normalize_verdict("unknown", [{"severity": "warning"}]), "warning")
+        self.assertEqual(_normalize_verdict("unknown", [{"severity": "error"}]), "blocked")
+        self.assertEqual(_normalize_verdict("unknown", []), "pass")
 
 
 if __name__ == "__main__":

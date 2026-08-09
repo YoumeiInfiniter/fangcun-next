@@ -390,6 +390,7 @@ def cmd_review(args) -> int:
     print(f"审核上下文包已写入：{path}（context_hash={context['context_hash']}）")
     if args.api:
         from .model_adapter import call_generate
+        from .model_adapter import parse_json_response
         from .schema_validate import validate
 
         text = call_generate(
@@ -400,7 +401,7 @@ def cmd_review(args) -> int:
             model_config=config.get("model_config"),
             temperature=0.2,
         )
-        report_data = json.loads(text)
+        report_data = _normalize_review_report(parse_json_response(text))
         ok, errors = validate(report_data, "review-report.schema.json")
         if not ok:
             raise CliError("模型审核输出未通过 Schema：" + "; ".join(errors))
@@ -411,6 +412,7 @@ def cmd_review(args) -> int:
 
 
 def _save_review(project_dir: Path, episode: int, report_data: dict, context_hash: str) -> None:
+    report_data = _normalize_review_report(report_data)
     report_data["episode"] = episode
     report_data["context_hash"] = context_hash
     ensure_valid(report_data, "review-report.schema.json")
@@ -425,6 +427,120 @@ def _save_review(project_dir: Path, episode: int, report_data: dict, context_has
     print(f"审核报告已保存：{target}")
     print(f"结论：{report_data.get('verdict')} | {report_data.get('summary')}")
     print(f"问题数：{len(report_data.get('issues', []))}")
+
+
+def _normalize_verdict(verdict: Any, issues: list[dict] | None) -> str:
+    """Map model verdicts onto review-report schema; infer from severity."""
+    mapping = {
+        "pass": "pass",
+        "通过": "pass",
+        "ok": "pass",
+        "warning": "warning",
+        "警告": "warning",
+        "blocked": "blocked",
+        "阻塞": "blocked",
+        "needs_revision": "blocked",
+        "revision": "blocked",
+        "block": "blocked",
+    }
+    raw = str(verdict or "").strip().lower()
+    if raw in mapping:
+        return mapping[raw]
+    severities = [str(i.get("severity", "")).lower() for i in (issues or [])]
+    if "error" in severities:
+        return "blocked"
+    if "warning" in severities:
+        return "warning"
+    return "pass"
+
+
+VALID_REVIEW_CATEGORIES = {
+    "source_fidelity",
+    "outline_adherence",
+    "causality",
+    "character_knowledge",
+    "dialogue_pairing",
+    "character_voice",
+    "previous_episode_bridge",
+    "ending_hook",
+    "continuity",
+    "shootability",
+    "timing",
+    "format",
+    "other",
+}
+
+REVIEW_CATEGORY_ALIASES = {
+    "causal-chain": "causality",
+    "causal_chain": "causality",
+    "causality": "causality",
+    "dialogue-connection": "dialogue_pairing",
+    "dialogue_connection": "dialogue_pairing",
+    "dialogue-pairing": "dialogue_pairing",
+    "dialogue_anchor": "dialogue_pairing",
+    "dialogue-anchor": "dialogue_pairing",
+    "dialogue": "dialogue_pairing",
+    "character-knowledge": "character_knowledge",
+    "knowledge": "character_knowledge",
+    "continuity": "continuity",
+    "duration": "timing",
+    "timing": "timing",
+    "format": "format",
+    "format-check": "format",
+    "format_check": "format",
+    "fidelity": "source_fidelity",
+    "source-fidelity": "source_fidelity",
+    "source": "source_fidelity",
+    "outline-adherence": "outline_adherence",
+    "outline": "outline_adherence",
+    "episode-goal": "outline_adherence",
+    "voice": "character_voice",
+    "character-voice": "character_voice",
+    "bridge": "previous_episode_bridge",
+    "previous-episode-bridge": "previous_episode_bridge",
+    "hook": "ending_hook",
+    "ending-hook": "ending_hook",
+    "ending_hook": "ending_hook",
+    "shootability": "shootability",
+}
+
+
+def _normalize_review_report(data: dict) -> dict:
+    """Unwrap wrappers, map categories/verdicts, enforce evidence rules."""
+    if isinstance(data.get("review_report"), dict):
+        data = data["review_report"]
+    issues = data.get("issues") or []
+    normalized: list[dict] = []
+    for idx, issue in enumerate(issues, start=1):
+        if not isinstance(issue, dict):
+            continue
+        raw_category = str(issue.get("category") or "other").strip().lower().replace(" ", "-")
+        category = REVIEW_CATEGORY_ALIASES.get(raw_category, raw_category)
+        if category not in VALID_REVIEW_CATEGORIES:
+            category = "other"
+        severity = str(issue.get("severity") or "warning").strip().lower()
+        if severity not in ("error", "warning", "suggestion"):
+            severity = "warning"
+        item = {
+            "id": str(issue.get("id") or f"REVIEW-{idx:03d}"),
+            "severity": severity,
+            "category": category,
+            "problem": str(issue.get("problem") or issue.get("detail") or "").strip(),
+        }
+        for key in ("location", "source_evidence", "adaptation_basis", "fix"):
+            value = issue.get(key)
+            if value not in (None, ""):
+                item[key] = value
+        if item["severity"] == "error" and not (item.get("source_evidence") or item.get("adaptation_basis")):
+            item["severity"] = "warning"
+            item["problem"] = item["problem"] + "（原 error 缺少证据，自动降级为 warning）"
+        if item["problem"]:
+            normalized.append(item)
+    data["issues"] = normalized
+    data["verdict"] = _normalize_verdict(data.get("verdict"), normalized)
+    if not str(data.get("summary") or "").strip():
+        data["summary"] = "模型未提供摘要，请以问题清单为准。"
+    return data
 
 
 def cmd_save_review(args) -> int:
@@ -460,6 +576,7 @@ def cmd_rewrite(args) -> int:
     print(f"重写上下文包已写入：{path}（context_hash={context['context_hash']}）")
     if args.api:
         from .model_adapter import call_generate
+        from .common import strip_code_fence
 
         text = call_generate(
             stage="rewrite",
@@ -468,6 +585,7 @@ def cmd_rewrite(args) -> int:
             model_config=config.get("model_config"),
             temperature=0.4,
         )
+        text = strip_code_fence(text)
         temp_draft = project_dir / "state" / f"rewrite_ep{args.episode:03d}.txt"
         temp_draft.write_text(text, encoding="utf-8")
         cmd_save_draft(argparse.Namespace(dir=str(project_dir), episode=args.episode, file=str(temp_draft)))
@@ -567,7 +685,7 @@ def cmd_check_api(args) -> int:
         user_context="只回复两个字：OK",
         model_config=model_config,
         temperature=0,
-        max_tokens=16,
+        max_tokens=256,
     )
     print(f"API 连通成功：{model_config.get('api_url')} | 模型 {model_config.get('model')} | 响应：{text.strip()[:120]}")
     return 0

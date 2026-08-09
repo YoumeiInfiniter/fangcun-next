@@ -66,6 +66,17 @@ def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def strip_code_fence(text: str) -> str:
+    """Remove a leading/trailing ``` code fence from model output."""
+    stripped = (text or "").strip()
+    if stripped.startswith("```") and stripped.endswith("```"):
+        first_nl = stripped.find("\n")
+        last_nl = stripped.rfind("\n")
+        if 0 <= first_nl < last_nl:
+            return stripped[first_nl + 1 : last_nl].strip()
+    return text
+
+
 def sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
