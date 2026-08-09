@@ -204,6 +204,28 @@ class ProjectCliTests(unittest.TestCase):
         )
         self.assertEqual(len(outlines["episodes"]), 1)
 
+    def test_check_api_without_config_fails_cleanly(self):
+        self.run_cli("init", "--dir", str(self.project_dir), "--config", str(self.config_file))
+        self.run_cli("check-api", "--dir", str(self.project_dir), expect=1)
+
+    def test_check_api_with_local_deepseek_config_fails_cleanly_without_key(self):
+        self.run_cli("init", "--dir", str(self.project_dir), "--config", str(self.config_file))
+        local = self.project_dir / "config.local.json"
+        local.write_text(
+            json.dumps(
+                {
+                    "model_config": {
+                        "api_url": "https://api.deepseek.com",
+                        "api_key_env": "DEEPSEEK_API_KEY",
+                        "model": "deepseek-chat",
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        self.run_cli("check-api", "--dir", str(self.project_dir), expect=1)
+
 
 if __name__ == "__main__":
     unittest.main()

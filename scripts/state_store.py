@@ -75,6 +75,14 @@ def load_config(project_dir: Path) -> dict:
     data = read_json(path)
     if not isinstance(data, dict):
         raise ValueError(f"config.json 缺失或损坏: {path}")
+    local_path = project_dir / "config.local.json"
+    if local_path.exists():
+        local = read_json(local_path)
+        if isinstance(local, dict) and isinstance(local.get("model_config"), dict):
+            merged = dict(data.get("model_config") or {})
+            merged.update(local["model_config"])
+            data["model_config"] = merged
+            data["_local_overrides"] = {"model_config": True}
     return data
 
 

@@ -20,13 +20,19 @@ class ModelUnavailableError(RuntimeError):
 
 def resolve_api_key(model_config: dict | None) -> str:
     model_config = model_config or {}
-    env_name = model_config.get("api_key_env") or os.environ.get("FANGCUN_API_KEY_ENV", "FANGCUN_API_KEY")
-    key = os.environ.get(env_name, "")
-    if not key:
-        raise ModelUnavailableError(
-            f"未配置 API 密钥（环境变量 {env_name}）。请使用 Host Agent Mode 或配置 model_config.api_key_env。"
-        )
-    return key
+    env_name = model_config.get("api_key_env")
+    if env_name:
+        key = os.environ.get(env_name, "")
+        if key:
+            return key
+    for fallback in ("FANGCUN_API_KEY", "DEEPSEEK_API_KEY"):
+        key = os.environ.get(fallback, "")
+        if key:
+            return key
+    raise ModelUnavailableError(
+        "未配置 API 密钥。请设置环境变量 FANGCUN_API_KEY 或 DEEPSEEK_API_KEY，"
+        "或在 config.local.json 的 model_config.api_key_env 指定其他变量名。"
+    )
 
 
 def build_payload(
@@ -87,4 +93,3 @@ def call_generate(
         return data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
         raise RuntimeError(f"模型响应格式不兼容: {exc}") from exc
-

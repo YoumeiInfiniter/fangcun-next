@@ -548,6 +548,31 @@ def cmd_forecast_duration(args) -> int:
     return 0
 
 
+def cmd_check_api(args) -> int:
+    """Verify the configured model endpoint with a minimal call."""
+    project_dir = _project_dir(args)
+    config = load_config(project_dir)
+    model_config = config.get("model_config") or {}
+    if not model_config.get("api_url"):
+        raise CliError(
+            "未配置 model_config.api_url。请把 DeepSeek 配置写入项目目录的 "
+            "config.local.json（参考仓库根 config.local.example.json）。"
+        )
+    from .model_adapter import call_generate, resolve_api_key
+
+    resolve_api_key(model_config)
+    text = call_generate(
+        stage="api_check",
+        system_prompt="你是 Fangcun Next 的 API 连通性验证助手。",
+        user_context="只回复两个字：OK",
+        model_config=model_config,
+        temperature=0,
+        max_tokens=16,
+    )
+    print(f"API 连通成功：{model_config.get('api_url')} | 模型 {model_config.get('model')} | 响应：{text.strip()[:120]}")
+    return 0
+
+
 def cmd_status(args) -> int:
     project_dir = _project_dir(args)
     status = project_status(project_dir)
@@ -738,6 +763,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("status")
     p.add_argument("--dir", required=True)
     p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("check-api")
+    p.add_argument("--dir", required=True)
+    p.set_defaults(func=cmd_check_api)
 
     p = sub.add_parser("export")
     p.add_argument("--dir", required=True)

@@ -10,12 +10,14 @@ from scripts.state_store import (
     config_path,
     init_project,
     is_approved,
+    load_config,
     load_manifest,
     load_active_versions,
     project_status,
     record_artifact,
     writer_overrides,
 )
+from scripts.common import atomic_write_json
 
 
 def make_config(project_id="fc-test-001") -> dict:
@@ -96,6 +98,29 @@ class StateStoreTests(unittest.TestCase):
         versions = load_active_versions(self.project_dir)
         self.assertEqual(versions["episode_outline"], "b.txt")
         self.assertEqual(len(load_manifest(self.project_dir)["artifacts"]["episode_outline"]["versions"]), 2)
+
+    def test_load_config_merges_local_model_config(self):
+        init_project(self.project_dir, make_config())
+        local = self.project_dir / "config.local.json"
+        atomic_write_json(
+            local,
+            {
+                "model_config": {
+                    "api_url": "https://api.deepseek.com",
+                    "api_key_env": "DEEPSEEK_API_KEY",
+                    "model": "deepseek-chat",
+                }
+            },
+        )
+        config = load_config(self.project_dir)
+        self.assertEqual(config["model_config"]["api_url"], "https://api.deepseek.com")
+        self.assertEqual(config["model_config"]["model"], "deepseek-chat")
+        self.assertEqual(config["_local_overrides"], {"model_config": True})
+
+    def test_load_config_without_local_file_keeps_original(self):
+        init_project(self.project_dir, make_config())
+        config = load_config(self.project_dir)
+        self.assertNotIn("model_config", config)
 
 
 if __name__ == "__main__":
