@@ -143,6 +143,7 @@ class ProjectCliTests(unittest.TestCase):
         self.run_cli(
             "confirm-stage", "--dir", str(self.project_dir),
             "--stage", "episode_outline", "--version", str(version),
+            "--operator", "unit-test-writer", "--confirmation-ref", "unit-test-message-1",
             "--override-reason", "unit-test writer fixture reviewed",
         )
 
@@ -183,6 +184,34 @@ class ProjectCliTests(unittest.TestCase):
         self.run_cli("status", "--dir", str(self.project_dir))
         self.run_cli("export", "--dir", str(self.project_dir))
         self.assertTrue((self.project_dir / "export" / "export.txt").exists())
+
+    def test_review_api_uses_same_derived_verdict_save_path(self):
+        from scripts.state_store import active_artifact_path
+
+        self.run_cli("init", "--dir", str(self.project_dir), "--config", str(self.config_file))
+        self.run_cli("ingest-source", "--dir", str(self.project_dir), "--file", str(self.novel))
+        self.run_cli("save-events", "--dir", str(self.project_dir), "--file", str(self.events))
+        self._save_outlines_confirmed()
+        self.run_cli("get-episode-context", "--dir", str(self.project_dir), "--episode", "1")
+        self.run_cli("save-draft", "--dir", str(self.project_dir), "--episode", "1", "--file", str(self.script))
+        binding = self._draft_binding(1)
+        model_report = {
+            "episode": 1,
+            "context_hash": binding["context_hash"],
+            "draft_hash": binding["draft_hash"],
+            "draft_version": binding["draft_version"],
+            "verdict": "blocked",
+            "summary": "没有有效问题",
+            "issues": [],
+        }
+        with mock.patch(
+            "scripts.model_adapter.call_generate",
+            return_value=json.dumps(model_report, ensure_ascii=False),
+        ):
+            self.run_cli("review", "--dir", str(self.project_dir), "--episode", "1", "--api")
+        saved = json.loads(active_artifact_path(self.project_dir, "review", 1).read_text(encoding="utf-8"))
+        self.assertEqual(saved["verdict"], "pass")
+        self.assertEqual(saved["model_verdict"], "blocked")
 
     def test_review_error_without_evidence_is_rejected(self):
         self.run_cli("init", "--dir", str(self.project_dir), "--config", str(self.config_file))

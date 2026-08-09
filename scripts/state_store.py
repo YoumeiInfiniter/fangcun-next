@@ -131,8 +131,42 @@ def init_project(project_dir: Path, config: dict, source: str = "cli") -> dict:
                 "项目目录已存在且 project_id 不一致，禁止覆盖已有项目。"
                 "如需新建项目请使用新的 project_dir。"
             )
-        manifest = load_manifest(project_dir)
-        return {"config": existing, "manifest": manifest, "created": False}
+        has_manifest = manifest_path(project_dir).exists()
+        has_active_versions = active_versions_path(project_dir).exists()
+        if has_manifest and has_active_versions:
+            manifest = load_manifest(project_dir)
+            return {"config": existing, "manifest": manifest, "created": False}
+        if has_manifest != has_active_versions:
+            raise ValueError(
+                "项目状态不完整：manifest.json 与 active_versions.json 必须同时存在。"
+                "为避免覆盖已有状态，拒绝自动修复。"
+            )
+        payload_dirs = (project_dir / "artifacts", project_dir / "source", project_dir / "export")
+        state_payload = state_dir(project_dir)
+        has_payload = any(path.exists() and any(path.iterdir()) for path in payload_dirs if path.is_dir())
+        has_payload = has_payload or (
+            state_payload.is_dir() and any(state_payload.iterdir())
+        )
+        if has_payload:
+            raise ValueError(
+                "项目已有 config.json 和业务数据，但缺少初始化状态文件；"
+                "请人工恢复 manifest/active_versions，拒绝静默重建。"
+            )
+        manifest = _default_manifest(existing.get("project_id", ""))
+        atomic_write_json(manifest_path(project_dir), manifest)
+        atomic_write_json(active_versions_path(project_dir), {})
+        jsonl_append(
+            state_dir(project_dir) / "config_history.jsonl",
+            {
+                "record_type": "config_adopted",
+                "previous": existing,
+                "current": existing,
+                "source": source,
+                "note": "init from preseeded config.json",
+                "created_at": now_iso(),
+            },
+        )
+        return {"config": existing, "manifest": manifest, "created": True}
     save_config(project_dir, config, source=source, note="init")
     manifest = _default_manifest(config.get("project_id", ""))
     atomic_write_json(manifest_path(project_dir), manifest)

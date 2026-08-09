@@ -49,6 +49,24 @@ class StateStoreTests(unittest.TestCase):
         self.assertFalse(second["created"])
         self.assertEqual(second["config"]["project_id"], "fc-test-001")
 
+    def test_init_adopts_preseeded_config_without_project_state(self):
+        self.project_dir.mkdir(parents=True)
+        atomic_write_json(self.project_dir / "config.json", make_config())
+        result = init_project(self.project_dir, make_config())
+        self.assertTrue(result["created"])
+        self.assertTrue((self.project_dir / "state" / "manifest.json").exists())
+        self.assertTrue((self.project_dir / "state" / "active_versions.json").exists())
+        reused = init_project(self.project_dir, make_config())
+        self.assertFalse(reused["created"])
+        self.assertEqual(reused["manifest"]["project_instance_id"], result["manifest"]["project_instance_id"])
+
+    def test_init_rejects_partial_existing_state(self):
+        self.project_dir.mkdir(parents=True)
+        atomic_write_json(self.project_dir / "config.json", make_config())
+        atomic_write_json(self.project_dir / "state" / "manifest.json", {"project_id": "fc-test-001"})
+        with self.assertRaisesRegex(ValueError, "项目状态不完整"):
+            init_project(self.project_dir, make_config())
+
     def test_init_rejects_different_project_id_in_same_dir(self):
         init_project(self.project_dir, make_config())
         with self.assertRaises(ValueError):

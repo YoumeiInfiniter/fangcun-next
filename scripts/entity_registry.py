@@ -21,7 +21,10 @@ def canonical_characters(events: list[dict]) -> list[str]:
 def validate_entity_names(content: str, events: list[dict], aliases: dict | None = None) -> list[str]:
     """Catch accidental character-name transpositions without fuzzy guessing."""
     aliases = aliases or {}
-    allowed: set[str] = set()
+    canonical_names = canonical_characters(events)
+    # Every declared canonical name is valid.  Without this, two legitimate
+    # names that are permutations of the same Han characters flag each other.
+    allowed: set[str] = set(canonical_names)
     for canonical, values in aliases.items():
         allowed.add(str(canonical))
         if isinstance(values, str):
@@ -29,7 +32,7 @@ def validate_entity_names(content: str, events: list[dict], aliases: dict | None
         elif isinstance(values, list):
             allowed.update(str(value) for value in values)
     problems: list[str] = []
-    for canonical in canonical_characters(events):
+    for canonical in canonical_names:
         if not (3 <= len(canonical) <= 4) or len(set(canonical)) != len(canonical):
             continue
         # Match only contiguous Han-character tokens of the same length and

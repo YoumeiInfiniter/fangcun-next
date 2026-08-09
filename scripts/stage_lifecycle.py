@@ -231,10 +231,15 @@ def confirm_stage(
     stage: str,
     version: str,
     operator: str,
+    confirmation_ref: str,
     review_override_reason: str | None = None,
 ) -> dict:
     if stage not in STAGE_KINDS:
         raise ValueError(f"未知阶段：{stage}")
+    if not str(operator or "").strip():
+        raise ValueError("确认阶段必须记录实际确认人 operator")
+    if not str(confirmation_ref or "").strip():
+        raise ValueError("确认阶段必须提供用户明确确认的 confirmation_ref")
     kind = STAGE_KINDS[stage]
     resolved = resolve_active(project_dir, kind)
     if not resolved or resolved["version"] != version:
@@ -261,7 +266,10 @@ def confirm_stage(
         version,
         status="approved",
         operator=operator,
-        reason=(review_override_reason or "writer confirmed after bound stage review"),
+        reason=(
+            (review_override_reason or "writer confirmed after bound stage review")
+            + f"; confirmation_ref={confirmation_ref.strip()}"
+        ),
     )
 
 

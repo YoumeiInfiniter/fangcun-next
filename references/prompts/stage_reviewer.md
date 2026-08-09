@@ -10,6 +10,6 @@
 - 集纲阶段还要检查每集事件、台词锚点、上下集接口和容量压力；时长仅提示，不作死门禁；
 - 角色规范名、格式及结构字段是否稳定。
 
-`error` 必须携带可验证 evidence：要么 `artifact_quote` 是当前产物逐字片段，要么完整填写当前 context 中真实存在的 upstream_kind/version/content_hash。不得捏造证据。
+`error` 必须携带可验证 evidence：要么 `artifact_quote` 是当前产物的逐字内容（仅允许换行、缩进和连续空白差异），要么完整填写当前 context 中真实存在的 upstream_kind/version/content_hash。不得捏造证据。
 
 输出必须符合 `stage-review.schema.json`。四个绑定字段必须原样返回；`verdict` 最终由系统根据 issues 唯一推导。

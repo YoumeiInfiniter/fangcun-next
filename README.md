@@ -29,7 +29,7 @@ Fangcun Next 是新版“小说转短剧剧本”Skill：以编剧为最终作�
 PYTHONPATH="$PWD" .venv/bin/python -m unittest discover -s tests/unit -p 'test_*.py'
 PYTHONPATH="$PWD" .venv/bin/python -m unittest discover -s tests/regression -p 'test_*.py'
 PYTHONPATH="$PWD" .venv/bin/python -m unittest discover -s tests/smoke -p 'test_*.py'
-PYTHONPATH="$PWD" .venv/bin/python -m scripts.project_cli build-package --out dist/fangcun-next-0.2.0.zip
+PYTHONPATH="$PWD" .venv/bin/python -m scripts.project_cli build-package --out dist/fangcun-next-0.2.1.zip
 ```
 
 完整工作流示例见 `SKILL.md` 的命令路由表。改编指引、故事大纲、集纲均采用“同源输入绑定 → AI 审核 → 编剧确认”门禁；未确认阶段不能进入下游。

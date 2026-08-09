@@ -4,7 +4,9 @@
 
 项目需求确认 → 原文归档与事件提取 → 柔性容量预估 → 改编指引 → AI 审核 → 编剧确认 → 故事大纲 → AI 审核 → 编剧确认 → 集纲 → AI 审核 → 编剧确认 → 按任意批次生成剧本 → AI 审核 → 编剧修改与确认 → 更新连续性 → 继续后续集数。
 
-三个创作规划阶段统一执行：`generate-*` 生成不可变 `stage_context` → AI 输出必须携带 `stage_context_hash` 保存为 `needs_writer_confirmation` → `review-stage` / `save-stage-review` 做同源审核 → `confirm-stage` 由编剧确认。未确认、审核阻塞、配置变化或上游版本变化时，下游拒绝启动。
+三个创作规划阶段统一执行：`generate-*` 生成不可变 `stage_context` → AI 输出必须携带 `stage_context_hash` 保存为 `needs_writer_confirmation` → `review-stage` / `save-stage-review` 做同源审核 → **结束当前任务并等待编剧回复** → 编剧明确确认后，在新的用户回合执行 `confirm-stage`。确认命令必须记录实际确认人和消息/评论引用；未确认、审核阻塞、配置变化或上游版本变化时，下游拒绝启动。
+
+不得把“请跑完整流程”“测试到第 N 集”、Agent 自己填写的 `operator=writer` 或推测的一次性预授权当作编剧确认。Host Agent 与 API 审核都只能给出审核结论，不能批准自己的阶段产物。
 
 人工导入不是 Agent 的自动降级通道。只有编剧明确表示该文件是人工版本时，才可使用 `--manual-import --manual-reason`，并记录人工审核 override；不能用它绕过普通 AI 阶段审核。
 

@@ -159,6 +159,8 @@ def cmd_ingest_source(args) -> int:
 
 def cmd_save_events(args) -> int:
     project_dir = _project_dir(args)
+    from .common import canonical_json
+    from .entity_registry import validate_entity_names
     from .source_ingest import read_all_chapters, read_chapter
     from .source_retriever import enrich_event_retrieval_spans
 
@@ -166,6 +168,26 @@ def cmd_save_events(args) -> int:
     events = data.get("events", data) if isinstance(data, dict) else data
     if not isinstance(events, list):
         raise CliError("事件资产必须是数组或含 events 数组的对象")
+    narrative_fields = (
+        "event",
+        "trigger",
+        "actions",
+        "result",
+        "required_reactions",
+        "knowledge_changes",
+    )
+    narrative = [
+        {key: event.get(key) for key in narrative_fields if key in event}
+        for event in events
+        if isinstance(event, dict)
+    ]
+    entity_problems = validate_entity_names(
+        canonical_json(narrative),
+        events,
+        load_config(project_dir).get("entity_aliases"),
+    )
+    if entity_problems:
+        raise CliError("事件资产角色实体校验失败：\n" + "\n".join(f"- {p}" for p in entity_problems))
     for event in events:
         try:
             ensure_valid(event, "source-event.schema.json")
@@ -1017,7 +1039,6 @@ def cmd_review(args) -> int:
     if args.api:
         from .model_adapter import call_generate
         from .model_adapter import parse_json_response
-        from .schema_validate import validate
 
         text = call_generate(
             stage="review",
@@ -1027,12 +1048,7 @@ def cmd_review(args) -> int:
             model_config=config.get("model_config"),
             temperature=0.2,
         )
-        report_data, normalize_errors = _normalize_review_report(parse_json_response(text))
-        if normalize_errors:
-            raise CliError("模型审核输出存在非法内容，拒绝保存：\n" + "\n".join(f"- {e}" for e in normalize_errors))
-        ok, errors = validate(report_data, "review-report.schema.json")
-        if not ok:
-            raise CliError("模型审核输出未通过 Schema：" + "; ".join(errors))
+        report_data = parse_json_response(text)
         _save_review(
             project_dir,
             args.episode,
@@ -1190,6 +1206,8 @@ def _derive_verdict(issues: list[dict] | None) -> str:
 
 def _normalize_review_report_v2(data: dict) -> tuple[dict, list[str]]:
     """Unwrap wrappers, map categories, reject invalid issues. Verdict derived later."""
+    if not isinstance(data, dict):
+        return {}, ["审核报告必须是 JSON 对象"]
     errors: list[str] = []
     if isinstance(data.get("review_report"), dict):
         data = data["review_report"]
@@ -1691,26 +1709,59 @@ def cmd_review_stage(args) -> int:
     out = project_dir / "state" / "prompt_bundles" / f"review_stage_{args.stage}_{version}.md"
     ensure_dir(out.parent)
     out.write_text(bundle, encoding="utf-8")
-    _print_bundle(out)
+    if not args.api:
+        _print_bundle(out)
+        return 0
+    print(f"阶段审核上下文包已写入：{out}")
+    from .model_adapter import call_generate, parse_json_response
+
+    config = load_config(project_dir)
+    text = call_generate(
+        stage=f"review_stage_{args.stage}",
+        system_prompt=out.read_text(encoding="utf-8"),
+        user_context="请按 stage-review.schema.json 输出阶段审核 JSON。",
+        output_contract="stage-review.schema.json",
+        model_config=config.get("model_config"),
+        temperature=0.2,
+    )
+    _save_stage_review_data(project_dir, args.stage, parse_json_response(text))
     return 0
 
 
 def cmd_save_stage_review(args) -> int:
     project_dir = _project_dir(args)
+    data = _load_json_file(Path(args.file), "阶段审核报告")
+    _save_stage_review_data(project_dir, args.stage, data)
+    return 0
+
+
+def _artifact_quote_matches(quote: str, artifact_text: str) -> bool:
+    """Accept exact evidence or whitespace-only rendering differences."""
+    if not quote:
+        return False
+    if quote in artifact_text:
+        return True
+    normalized_quote = " ".join(quote.replace("\r\n", "\n").replace("\r", "\n").split())
+    normalized_artifact = " ".join(
+        artifact_text.replace("\r\n", "\n").replace("\r", "\n").split()
+    )
+    return bool(normalized_quote) and normalized_quote in normalized_artifact
+
+
+def _save_stage_review_data(project_dir: Path, stage: str, data: Any) -> None:
     from .stage_lifecycle import STAGE_KINDS, load_stage_context
 
-    data = _load_json_file(Path(args.file), "阶段审核报告")
     if not isinstance(data, dict):
         raise CliError("阶段审核报告必须是 JSON 对象")
-    kind = STAGE_KINDS[args.stage]
+    kind = STAGE_KINDS[stage]
     version = active_version_id(project_dir, kind)
     record = artifact_version_record(project_dir, kind, None, version) if version else None
     path = active_artifact_path(project_dir, kind)
     if not record or not path:
-        raise CliError(f"{args.stage} 没有活动产物")
+        raise CliError(f"{stage} 没有活动产物")
     context_hash = str((record.get("meta") or {}).get("stage_context_hash") or "")
     required = {
-        "stage": args.stage,
+        "stage": stage,
         "stage_context_hash": context_hash,
         "artifact_version": version,
         "artifact_hash": record.get("content_hash"),
@@ -1720,7 +1771,7 @@ def cmd_save_stage_review(args) -> int:
             raise CliError(f"阶段审核缺少 {key}，不允许自动补齐")
         if data.get(key) != expected:
             raise CliError(f"阶段审核 {key} 与当前待审产物不一致")
-    context = load_stage_context(project_dir, args.stage, context_hash)
+    context = load_stage_context(project_dir, stage, context_hash)
     artifact_text = path.read_text(encoding="utf-8")
     issues = data.get("issues")
     if not isinstance(issues, list):
@@ -1740,7 +1791,7 @@ def cmd_save_stage_review(args) -> int:
             and item.get("content_hash") == evidence.get("upstream_content_hash")
             for item in context.get("upstream_bindings", []) or []
         )
-        if not (quote and quote in artifact_text) and not binding_ok:
+        if not _artifact_quote_matches(quote, artifact_text) and not binding_ok:
             raise CliError(f"error issue {issue.get('id')} 的证据无法绑定当前产物或上游")
     severities = {str(item.get("severity")) for item in issues if isinstance(item, dict)}
     data["verdict"] = "blocked" if "error" in severities else "warning" if "warning" in severities else "pass"
@@ -1750,13 +1801,13 @@ def cmd_save_stage_review(args) -> int:
         raise CliError("阶段审核未通过 Schema：\n" + "\n".join(exc.messages))
     result = commit_artifact(
         project_dir,
-        f"stage_review_{args.stage}",
+        f"stage_review_{stage}",
         content=data,
         source="ai",
         status="approved",
         ext="json",
         meta={
-            "stage": args.stage,
+            "stage": stage,
             "stage_context_hash": context_hash,
             "artifact_version": version,
             "artifact_hash": record.get("content_hash"),
@@ -1764,7 +1815,6 @@ def cmd_save_stage_review(args) -> int:
         },
     )
     print(f"阶段审核已保存：{result['path']}（{data['verdict']}）")
-    return 0
 
 
 def cmd_confirm_stage(args) -> int:
@@ -1776,6 +1826,7 @@ def cmd_confirm_stage(args) -> int:
         stage=args.stage,
         version=args.version,
         operator=args.operator,
+        confirmation_ref=args.confirmation_ref,
         review_override_reason=args.override_reason,
     )
     if args.stage == "episode_outline":
@@ -1953,6 +2004,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("review-stage", help="生成与当前阶段版本同源绑定的独立审核包")
     p.add_argument("--dir", required=True)
     p.add_argument("--stage", required=True, choices=["adaptation", "story_outline", "episode_outline"])
+    p.add_argument("--api", action="store_true")
     p.set_defaults(func=cmd_review_stage)
 
     p = sub.add_parser("save-stage-review", help="保存并验证阶段审核报告")
@@ -1965,7 +2017,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dir", required=True)
     p.add_argument("--stage", required=True, choices=["adaptation", "story_outline", "episode_outline"])
     p.add_argument("--version", required=True)
-    p.add_argument("--operator", default="writer")
+    p.add_argument("--operator", required=True, help="实际确认人的可审计标识，不得由 Agent 冒充 writer")
+    p.add_argument("--confirmation-ref", required=True, help="用户明确确认所在消息、评论或记录的引用")
     p.add_argument("--override-reason", default="")
     p.set_defaults(func=cmd_confirm_stage)
 

@@ -47,9 +47,9 @@ description: |
 | 改编指引 | `generate-adaptation`（记录输出的 `stage_context_hash`）→ `save-adaptation --file <strategy.md> --stage-context-hash <hash>` |
 | 故事大纲 | 上一阶段确认后：`generate-story-outline` → `save-story-outline --file <outline.md> --stage-context-hash <hash>` |
 | 集纲 | 上两阶段确认后：`generate-episode-outline` → `save-episode-outline --outline-json <episodes.json> --stage-context-hash <hash>`；可读 Markdown 自动同步 |
-| 审核阶段产物 | `review-stage --stage adaptation|story_outline|episode_outline` → 按 `stage-review.schema.json` 审核 → `save-stage-review --stage <stage> --file <review.json>` |
-| 编剧确认阶段产物 | `confirm-stage --stage <stage> --version vNNN`；只有绑定审核 pass/warning 后可确认 |
-| 编剧人工导入阶段产物 | 仅在编剧明确要求时，用对应 save 命令的 `--manual-import --manual-reason "..."`，随后仍需 `confirm-stage --override-reason "人工审核说明"` |
+| 审核阶段产物 | `review-stage --stage adaptation|story_outline|episode_outline [--api]` → Host Agent 时按 `stage-review.schema.json` 审核并执行 `save-stage-review`；API 时由同一保存门禁落盘 |
+| 编剧确认阶段产物 | **必须先停止并等待编剧在后续消息明确确认**，再执行 `confirm-stage --stage <stage> --version vNNN --operator <实际确认人> --confirmation-ref <消息或评论引用>` |
+| 编剧人工导入阶段产物 | 仅在编剧明确要求时，用对应 save 命令的 `--manual-import --manual-reason "..."`；后续仍需新的明确确认消息和可审计 confirmation_ref |
 | 写第N集 | `get-episode-context --episode N` → 读上下文包 → `save-draft --episode N --file <draft.txt>` |
 | 审核 | `review --episode N` → 读审核包 → `save-review --episode N --file <review.json>`（verdict 由系统按 issues 推导） |
 | 定向重写 | `rewrite --episode N` → 读重写包（含一次性 ticket）→ `save-draft --episode N --file <draft2.txt> --rewrite-ticket <ticket>` → 重新审核 |
@@ -65,7 +65,7 @@ description: |
 | 迁移旧项目 | `migrate --legacy-config <旧config> --out-dir <目录>` |
 | 生成发布包 | `build-package --out dist/fangcun-next-<version>.zip` |
 
-API 模式：在 `review` / `rewrite` 后加 `--api`，由配置的模型执行；未配置时
+API 模式：在 `review-stage` / `review` / `rewrite` 后加 `--api`，由配置的模型执行；未配置时
 必须使用 Host Agent Mode，且不得声称完成了系统模型审核。
 
 ## 五层架构
@@ -90,6 +90,7 @@ API 模式：在 `review` / `rewrite` 后加 `--api`，由配置的模型执行�
 10. 不把单一剧本样本或单一类型流程变成所有题材的硬规则。
 11. 改编指引、故事大纲和集纲的 AI 产物保存后只能处于 `needs_writer_confirmation`；审核与编剧确认不可省略，未确认或上游已变化时下游命令硬阻断。
 12. 阶段输出必须携带生成时的 `stage_context_hash`；项目配置、上游版本或内容哈希变化后，旧输出拒绝保存。Agent 不得擅自使用人工导入/override 通道。
+13. `save-stage-review` 后必须结束当前任务并展示产物与审核结论；只有编剧在后续消息明确确认该版本时才能调用 `confirm-stage`。任务目标、批量运行要求、Agent 自填 `operator=writer` 或推测的“预授权”都不构成确认。
 
 ## 降级与诚实
 

@@ -12,6 +12,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from scripts.context_builder import ContextIncompleteError, build_episode_context
 from scripts.project_cli import main
@@ -102,6 +103,10 @@ class Round5RealWorkflowAcceptance(unittest.TestCase):
                 "episode_outline",
                 "--version",
                 str(version),
+                "--operator",
+                "round5-writer",
+                "--confirmation-ref",
+                "round5-outline-fixture-confirmation",
                 "--override-reason",
                 "synthetic writer fixture reviewed",
             )
@@ -312,6 +317,7 @@ class Round5RealWorkflowAcceptance(unittest.TestCase):
             stage="adaptation",
             version=saved["version"],
             operator="writer",
+            confirmation_ref="round5-message-stage-ready",
             review_override_reason="writer confirmed after manual review",
         )
         assert_stage_ready(self.project, "story_outline")
@@ -320,6 +326,23 @@ class Round5RealWorkflowAcceptance(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             assert_stage_ready(self.project, "story_outline")
+
+    def test_stage_confirmation_requires_auditable_user_reference(self):
+        from scripts.stage_lifecycle import build_stage_context, confirm_stage, save_stage_artifact
+
+        context = build_stage_context(self.project, "adaptation")
+        saved = save_stage_artifact(
+            self.project, stage="adaptation", content="# 待确认\n", stage_context=context
+        )
+        with self.assertRaisesRegex(ValueError, "confirmation_ref"):
+            confirm_stage(
+                self.project,
+                stage="adaptation",
+                version=saved["version"],
+                operator="writer",
+                confirmation_ref="",
+                review_override_reason="fixture",
+            )
 
     def test_stage_context_binds_exact_upstream_versions_and_hashes(self):
         from scripts.stage_lifecycle import build_stage_context, confirm_stage, save_stage_artifact
@@ -331,6 +354,7 @@ class Round5RealWorkflowAcceptance(unittest.TestCase):
             stage="adaptation",
             version=saved["version"],
             operator="writer",
+            confirmation_ref="round5-message-upstream-binding",
             review_override_reason="manual confirmation",
         )
         context = build_stage_context(self.project, "story_outline")
@@ -344,6 +368,28 @@ class Round5RealWorkflowAcceptance(unittest.TestCase):
         events = [{"characters": ["季来之", "宋今今"], "key_quotes": []}]
         problems = validate_entity_names("宋今今闯进季之来的房间。", events, {})
         self.assertTrue(any("季之来" in p and "季来之" in p for p in problems))
+
+    def test_save_events_rejects_transposed_name_before_commit(self):
+        self._write_novel("第1章 回家\n季来之回到家中。")
+        chapter = (self.project / "source/chapters/chapter_001.txt").read_text(encoding="utf-8")
+        start = chapter.index("季来之")
+        event = self._event(
+            "CH001-E01",
+            1,
+            start,
+            start + len("季来之回到家中。"),
+            "季之来回到家中。",
+            source_quote="季来之回到家中。",
+            characters=["季来之"],
+            trigger="季之来结束工作",
+            actions=["季之来进门"],
+            result="季之来到家",
+        )
+        path = self.root / "bad_events.json"
+        path.write_text(json.dumps([event], ensure_ascii=False), encoding="utf-8")
+        output = run_cli("save-events", "--dir", str(self.project), "--file", str(path), expect=1)
+        self.assertIn("季之来", output)
+        self.assertIsNone(active_artifact_path(self.project, "source_events"))
 
     def test_large_stage_bundle_uses_compact_event_catalog(self):
         from scripts.stage_lifecycle import compact_event_catalog
@@ -433,12 +479,92 @@ class Round5RealWorkflowAcceptance(unittest.TestCase):
         run_cli(
             "confirm-stage", "--dir", str(self.project), "--stage", "adaptation",
             "--version", str(version),
+            "--operator", "round5-writer", "--confirmation-ref", "round5-message-stage-review",
         )
         self.assertEqual(
             artifact_version_record(self.project, "adaptation_strategy", None, version)["status"],
             "approved",
         )
         run_cli("generate-story-outline", "--dir", str(self.project))
+
+    def test_stage_review_api_uses_bound_save_path(self):
+        novel = "第1章 当前\n当前事件发生。"
+        self._write_novel(novel)
+        chapter = (self.project / "source/chapters/chapter_001.txt").read_text(encoding="utf-8")
+        start = chapter.index("当前事件")
+        self._save_events([
+            self._event("CH001-E01", 1, start, start + 4, "当前事件", source_quote="当前事件")
+        ])
+        from scripts.stage_lifecycle import build_stage_context
+
+        context = build_stage_context(self.project, "adaptation")
+        artifact = self.root / "adaptation_api.md"
+        artifact.write_text("# 改编指引\n保留当前事件。\n", encoding="utf-8")
+        run_cli(
+            "save-adaptation", "--dir", str(self.project), "--file", str(artifact),
+            "--stage-context-hash", context["context_hash"],
+        )
+        version = active_version_id(self.project, "adaptation_strategy")
+        record = artifact_version_record(self.project, "adaptation_strategy", None, version)
+        model_report = {
+            "stage": "adaptation",
+            "stage_context_hash": context["context_hash"],
+            "artifact_version": version,
+            "artifact_hash": record["content_hash"],
+            "verdict": "blocked",
+            "summary": "没有有效问题",
+            "issues": [],
+        }
+        with mock.patch(
+            "scripts.model_adapter.call_generate",
+            return_value=json.dumps(model_report, ensure_ascii=False),
+        ):
+            run_cli("review-stage", "--dir", str(self.project), "--stage", "adaptation", "--api")
+        saved = json.loads(active_artifact_path(self.project, "stage_review_adaptation").read_text(encoding="utf-8"))
+        self.assertEqual(saved["verdict"], "pass")
+
+    def test_stage_review_evidence_accepts_whitespace_only_variation(self):
+        from scripts.stage_lifecycle import build_stage_context
+
+        context = build_stage_context(self.project, "adaptation")
+        artifact = self.root / "adaptation_multiline.md"
+        artifact.write_text("# 改编指引\n第一条事实。\n第二条事实。\n", encoding="utf-8")
+        run_cli(
+            "save-adaptation", "--dir", str(self.project), "--file", str(artifact),
+            "--stage-context-hash", context["context_hash"],
+        )
+        version = active_version_id(self.project, "adaptation_strategy")
+        record = artifact_version_record(self.project, "adaptation_strategy", None, version)
+        review = {
+            "stage": "adaptation",
+            "stage_context_hash": context["context_hash"],
+            "artifact_version": version,
+            "artifact_hash": record["content_hash"],
+            "verdict": "pass",
+            "summary": "跨行证据",
+            "issues": [{
+                "id": "STAGE-001",
+                "severity": "error",
+                "category": "continuity",
+                "problem": "两条事实顺序错误",
+                "evidence": {"artifact_quote": "第一条事实。 第二条事实。"},
+            }],
+        }
+        review_path = self.root / "stage_review_multiline.json"
+        review_path.write_text(json.dumps(review, ensure_ascii=False), encoding="utf-8")
+        run_cli(
+            "save-stage-review", "--dir", str(self.project), "--stage", "adaptation",
+            "--file", str(review_path),
+        )
+        saved = json.loads(active_artifact_path(self.project, "stage_review_adaptation").read_text(encoding="utf-8"))
+        self.assertEqual(saved["verdict"], "blocked")
+
+        review["issues"][0]["evidence"]["artifact_quote"] = "完全不存在的证据"
+        review_path.write_text(json.dumps(review, ensure_ascii=False), encoding="utf-8")
+        run_cli(
+            "save-stage-review", "--dir", str(self.project), "--stage", "adaptation",
+            "--file", str(review_path), expect=1,
+        )
 
     def test_stage_save_rejects_missing_or_tampered_context_hash(self):
         artifact = self.root / "adaptation.md"
@@ -471,6 +597,7 @@ class Round5RealWorkflowAcceptance(unittest.TestCase):
             stage="adaptation",
             version=adaptation["version"],
             operator="writer",
+            confirmation_ref="round5-message-context-binding",
             review_override_reason="synthetic fixture reviewed",
         )
         valid = build_stage_context(self.project, "story_outline", save=False)

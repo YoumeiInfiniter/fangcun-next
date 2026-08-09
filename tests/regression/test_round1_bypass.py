@@ -132,6 +132,7 @@ class Round1BypassBase(unittest.TestCase):
         _run(
             "confirm-stage", "--dir", str(self.project_dir),
             "--stage", "episode_outline", "--version", str(version),
+            "--operator", "round1-writer", "--confirmation-ref", "round1-fixture-confirmation",
             "--override-reason", "round1 synthetic writer fixture reviewed",
         )
 
