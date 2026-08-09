@@ -112,4 +112,4 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD/skills/drama/tools" .venv/bin/python 
 ## 8. Commit
 
 - 起点：`090848f`
-- 本轮提交：`975c898`（主修复）、`<handoff>`、`<hash-fix>`
+- 本轮提交：`975c898`（主修复）、`3f8ccab`、`pending`
