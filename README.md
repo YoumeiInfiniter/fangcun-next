@@ -14,12 +14,14 @@ Fangcun Next 是新版“小说转短剧剧本”Skill：以编剧为最终作�
 
 ## 当前状态
 
-新版核心已实现（见 `SKILL.md` 与 `scripts/`）：
+新版核心已实现（见 `SKILL.md` 与 `scripts/`，当前版本 0.3.0）：
 
 - 数据契约：`references/schemas/`（11 份 JSON Schema）；
 - 确定性运行时：原文归档与锚点检索、单集上下文构建、Prompt/Craft 路由、格式校验、连续性、修改请求、时长/容量预估、迁移、发布包；
 - CLI：`python3 -m scripts.project_cli <command>`（或安装后 `fangcun`）；
-- 测试：`tests/unit/`（新版确定性模块）、`tests/regression/`（EP001）、`tests/smoke/`（多题材）。
+- 测试：`tests/unit/`（新版确定性模块）、`tests/regression/`（EP001 + 第四版公开案例）、`tests/smoke/`（多题材）。
+- 流程：Host Agent Mode 为默认正式路径；标准单集 Writer 1 + Reviewer 1，快速草稿
+  `--workflow-mode quick_draft` 只有 Writer 1；API Mode 为显式实验性路径。
 
 旧版代码保留在 `skills/`、`agents/`、`tools/` 与 `docs/legacy/`，作为迁移输入与兼容基线；新版发布包默认排除这些目录。
 

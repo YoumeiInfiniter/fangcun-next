@@ -406,6 +406,10 @@ continuity_state.json   → state/continuity.json
 - 上游产物或项目配置改变后，继续消费旧阶段输出。
 - 在生成或审核阶段产物的同一 Agent 回合内代替编剧执行确认；测试目标、批量运行要求或 Agent 自填身份均不视为人工确认。
 
+标准单集默认只执行一次 Writer 生成与一次 Reviewer 审核；快速草稿模式只执行
+Writer 一次，标记为 `unreviewed_draft`，不得标记已审核或更新连续性。自动重写
+默认关闭，只有编剧明确要求时签发一次性 rewrite ticket。
+
 ### 8.4 创作规划阶段统一门禁
 
 改编指引、故事大纲、集纲统一采用四步状态机：
@@ -514,6 +518,21 @@ continuity_state.json   → state/continuity.json
 - 集末钩子；
 - 建议时长；
 - 与下一集的接口。
+
+集纲合同 V2 在同一次集纲生成中产出，不新增独立模型阶段：
+
+- `episode_focus`：本集观众记忆中心，可涵盖多个相关事件；
+- `required_story_beats`：不可省略的剧情变化，绑定事件 ID 或改编决策 ID；
+- `required_quotes`：必须保留或必须成对保留的原文台词，绑定事件 ID 与 pair_id；
+- `project_rule_refs`：只引用当前项目已确认规则 ID，不复制规则正文；
+- `optional_beats`：可压缩、删除或延后内容；
+- `beat_plan`：事件呈现计划（function、presentation、时长估计、进入/可见结果、
+  `required_visual_beats`）；
+- `overflow_options`：`compress` / `defer` / `accept_overflow` 选择。
+
+旧 `must_keep` 继续可读取和验证，但新版本不再把项目规则、柔性风格或关系边界
+混入其中；迁移旧集纲时无法可靠分类的条目标记为 `legacy_unspecified`，不修改
+历史版本文件。
 
 ### 9.7 剧本阶段
 
@@ -982,6 +1001,13 @@ Writer 在内部执行以下步骤，但不得把过程写进最终剧本：
 - 标注低置信度；
 - 在故事大纲和集纲完成后重新估算。
 
+单集局部容量报告绑定活动集纲版本和内容哈希，统计本集事件最低/理想时长，
+对比本集建议区间，输出 `low/medium/high`、置信度、计算依据和 `advisory_only`。
+报告进入集纲版本元数据、可读 Markdown、集纲审核摘要、`episode_context`、
+Writer/Reviewer Prompt。medium/high 由编剧一次性 `accept_current_plan` 或
+`changes_recorded` 决定；无风险时系统记录 `not_applicable`。接受当前规划是合法
+选择，不构成硬门禁，也不自动回退上游。
+
 ### 15.4 输出
 
 ```json
@@ -1128,6 +1154,14 @@ suggestion：纯创意偏好
 ```
 
 时长超出默认不得判为 error。编剧可接受任何 warning。
+
+可拍性按合同要求分级：核心剧情、因果、认知变化或 `required_visual_beats` 只被
+概述且导致观众无法理解发生过程时为 error；可理解但表演层过薄为 warning；纯审美
+优化为 suggestion。不得因动作行短自动报错，也不得因存在 `△` 判定通过。
+
+草稿时长指标由 Runtime 在 `save-draft` 时确定性计算并绑定
+`context_hash + draft_version + draft_hash`；Reviewer 不得猜测或覆盖秒数，
+最终 `timing_advisory` 来自系统指标，模型估计只保留为 `legacy_model_estimate`。
 
 ### 17.4 审核输出示例
 
@@ -1355,6 +1389,11 @@ XML 由 Renderer 包装，Writer 不直接负责。标签外禁止额外注释�
 
 低于平台下限时提醒；超出建议区间时提供方案；是否修改由编剧决定。
 
+每版草稿保存时生成 `draft_metrics`：episode、context_hash、draft_version、
+draft_hash、estimator_version、台词字数、动作字数/行数、场次数、反应数、
+预计秒数/区间、偏好区间、偏差等级和 blocking=false。指标由 `source=system`
+保存，草稿内容变化后旧指标不得用于新版本；相同草稿重复保存幂等。
+
 ---
 
 ## 21. Agent 与模型无关的执行接口
@@ -1396,10 +1435,16 @@ generate(
 
 支持两种模式：
 
-- **Host Agent Mode**：当前 Agent 直接读取上下文并写作；
+- **Host Agent Mode（默认正式路径）**：当前 Agent 直接读取上下文并写作；
 - **API Mode**：Runtime 调用配置模型。
 
 两种模式必须使用相同 `episode_context`、Prompt 和校验器。
+
+API Mode 是实验性 Provider Adapter：默认工作流不调用、不因检测到 Key 自动选择；
+只有用户明确要求或项目配置明确启用时才允许调用。调用前输出 experimental 提示，
+检查 `finish_reason`、空正文和非法 JSON，失败时保留错误并停止；不自动重试，
+不静默降级为“API 审核成功”。审核来源如实记录为 `host_agent` 或
+`experimental_api`。
 
 改编指引、故事大纲和集纲的阶段审核同样支持 Host Agent 与 API 两种模式，且必须进入同一个绑定、证据、verdict 推导和保存门禁。阶段审核保存后必须停止，等待编剧在后续消息明确确认；确认记录至少包含实际确认人和消息/评论引用。
 

@@ -32,6 +32,16 @@ description: |
 精修、编剧上传自己的版本作为定稿、评论/正文局部修改。因时长超出预期而自动
 回退到早期阶段是禁止行为；是否整体重做只由编剧明确决定。
 
+## 标准模式与快速草稿模式
+
+- 标准模式（默认）：`get-episode-context` → Writer 一次生成 → `save-draft` →
+  Reviewer 一次同源审核 → 展示后停止等待编剧。不自动重写，warning 不触发模型调用。
+- 快速草稿模式：`save-draft --workflow-mode quick_draft`，只做本地格式与
+  `draft_metrics` 校验并标记 `unreviewed_draft`；不调用 Reviewer、不标记已审核、
+  不能直接定稿或更新连续性。编剧之后可要求标准审核。
+- 模型调用预算：标准单集最多 Writer 1 + Reviewer 1；快速草稿只有 Writer 1；
+  自动重写 0，只有编剧明确要求时签发一次性 rewrite ticket（最多一次）。
+
 ## 命令路由
 
 所有命令通过 `scripts/project_cli.py` 执行（也可安装 console script `fangcun`）。
@@ -48,9 +58,10 @@ description: |
 | 故事大纲 | 上一阶段确认后：`generate-story-outline` → `save-story-outline --file <outline.md> --stage-context-hash <hash>` |
 | 集纲 | 上两阶段确认后：`generate-episode-outline` → `save-episode-outline --outline-json <episodes.json> --stage-context-hash <hash>`；可读 Markdown 自动同步 |
 | 审核阶段产物 | `review-stage --stage adaptation|story_outline|episode_outline [--api]` → Host Agent 时按 `stage-review.schema.json` 审核并执行 `save-stage-review`；API 时由同一保存门禁落盘 |
-| 编剧确认阶段产物 | **必须先停止并等待编剧在后续消息明确确认**，再执行 `confirm-stage --stage <stage> --version vNNN --operator <实际确认人> --confirmation-ref <消息或评论引用>` |
+| 编剧确认阶段产物 | **必须先停止并等待编剧在后续消息明确确认**，再执行 `confirm-stage --stage <stage> --version vNNN --operator <实际确认人> --confirmation-ref <消息或评论引用>`；集纲 medium/high 容量风险必须同时提供 `--capacity-decision accept_current_plan|changes_recorded` |
 | 编剧人工导入阶段产物 | 仅在编剧明确要求时，用对应 save 命令的 `--manual-import --manual-reason "..."`；后续仍需新的明确确认消息和可审计 confirmation_ref |
-| 写第N集 | `get-episode-context --episode N` → 读上下文包 → `save-draft --episode N --file <draft.txt>` |
+| 写第N集（标准） | `get-episode-context --episode N` → 读上下文包 → `save-draft --episode N --file <draft.txt>` |
+| 快速草稿 | 同一上下文 → `save-draft --episode N --file <draft.txt> --workflow-mode quick_draft` |
 | 审核 | `review --episode N` → 读审核包 → `save-review --episode N --file <review.json>`（verdict 由系统按 issues 推导） |
 | 定向重写 | `rewrite --episode N` → 读重写包（含一次性 ticket）→ `save-draft --episode N --file <draft2.txt> --rewrite-ticket <ticket>` → 重新审核 |
 | 编剧定稿 | `approve --episode N --file <approved.txt>` |
@@ -65,8 +76,12 @@ description: |
 | 迁移旧项目 | `migrate --legacy-config <旧config> --out-dir <目录>` |
 | 生成发布包 | `build-package --out dist/fangcun-next-<version>.zip` |
 
-API 模式：在 `review-stage` / `review` / `rewrite` 后加 `--api`，由配置的模型执行；未配置时
-必须使用 Host Agent Mode，且不得声称完成了系统模型审核。
+API 模式（实验性）：只有用户明确要求或项目配置明确启用时，才可在
+`review-stage` / `review` / `rewrite` 后加 `--api`。默认工作流完全不调用 API；
+未配置或未明确启用时不得因为检测到 Key 就自动选择 API。调用前会输出实验性提示，
+`finish_reason=length`、空正文或非法 JSON 会诚实失败，不自动重试、不静默降级、
+不得伪装成系统审核成功。Host Agent Mode 是默认正式路径，审核来源如实记录为
+`host_agent`。
 
 ## 五层架构
 
@@ -110,6 +125,15 @@ API 模式：在 `review-stage` / `review` / `rewrite` 后加 `--api`，由配�
 - 内部剧本一律为 `default-cn` 业务正文；`<scriptItem>` 只由 export/Renderer 包装，
   旧 XML 导入会先确定性解包再保存。
 - 上下文缺少原文证据且无改编依据时硬阻断，让编剧决定，不允许模型自由补写。
+- 每版草稿保存时由 Runtime 计算并绑定 `draft_metrics`
+  （`context_hash + draft_version + draft_hash`）；Reviewer 不得猜测或覆盖秒数，
+  最终 `timing_advisory` 始终来自系统指标。
+- 集纲局部容量报告绑定集纲版本/哈希，进入可读 Markdown、阶段审核摘要、
+  `episode_context` 与 Writer/Reviewer Prompt；medium/high 由编剧一次性
+  `accept_current_plan` / `changes_recorded` 决定，超时不回滚上游。
+- `required_story_beats` / `required_quotes` / `beat_plan` / `project_rule_refs`
+  与旧 `must_keep` 分离：剧情必保留、台词必保留、项目规则、可选内容不再混入
+  `must_keep`；旧项目保持可读，历史版本不原地改写。
 - 原文事件的精确 `source_span` 用于证据校验，独立的 `retrieval_span` 用于提供触发—行动—反应—结果上下文；不得把一个孤立原句当成完整事件上下文。
 - `must_keep` 和台词锚点必须绑定真实事件或明确改编决策；未解析的自由文本、缺一端的问答/铺垫回收对在集纲保存时即拒绝。
 

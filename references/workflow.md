@@ -10,6 +10,22 @@
 
 人工导入不是 Agent 的自动降级通道。只有编剧明确表示该文件是人工版本时，才可使用 `--manual-import --manual-reason`，并记录人工审核 override；不能用它绕过普通 AI 阶段审核。
 
+## 标准模式与快速草稿
+
+- 标准模式：构建/复用 `episode_context` → Writer 一次 → 本地格式与
+  `draft_metrics` 校验 → Reviewer 一次 → 展示并停止。不自动重写、不自动复审。
+- 快速草稿：`save-draft --workflow-mode quick_draft` → 本地格式与
+  `draft_metrics` 校验 → 标记 `unreviewed_draft` → 展示并停止。不调用 Reviewer，
+  不得直接定稿或更新连续性。
+
+## 集纲容量决定
+
+集纲保存时生成绑定集纲版本/哈希的逐集密度报告；medium/high 集由系统一次性
+汇总（不逐集轰炸）。编剧确认集纲时可选择 `accept_current_plan`（接受当前规划）
+或 `changes_recorded`（已记录调整并重新保存新版本）；无风险时系统记录
+`not_applicable`。决定写入 `state/capacity_decisions.jsonl`。剧本阶段即使超时
+也只提示，不自动回退上游。
+
 ## 支持的变体
 
 - 全部集纲完成后再写剧本；
