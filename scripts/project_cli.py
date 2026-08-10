@@ -2105,6 +2105,50 @@ def cmd_confirm_stage(args) -> int:
     return 0
 
 
+def cmd_confirm_stages(args) -> int:
+    """P1：上游重绑时，多个阶段合并为一次批量确认。"""
+    project_dir = _project_dir(args)
+    from .stage_lifecycle import confirm_stages
+
+    stages = [s.strip() for s in (args.stages or "").split(",") if s.strip()]
+    capacity_decisions: dict[str, str] = {}
+    if getattr(args, "capacity_decision", None):
+        capacity_decisions = {stage: args.capacity_decision for stage in stages}
+    result = confirm_stages(
+        project_dir,
+        stages=stages,
+        operator=args.operator,
+        confirmation_ref=args.confirmation_ref,
+        review_override_reason=args.override_reason,
+        capacity_decisions=capacity_decisions,
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_locate_span(args) -> int:
+    """P1/P2：事件提取半自动 span 定位（本地确定性，无 API）。"""
+    project_dir = _project_dir(args)
+    from .source_ingest import read_chapter
+    from .span_locator import locate_span
+
+    chapter_result = read_chapter(project_dir, args.chapter)
+    if chapter_result is None:
+        raise CliError(f"章节 {args.chapter} 不存在（章节号从 1 开始）")
+    chapter_text, chapter_meta = chapter_result
+    result = locate_span(
+        chapter_text,
+        args.text,
+        occurrence=args.occurrence,
+        fuzzy=args.fuzzy,
+    )
+    if result.get("found"):
+        result["chapter_id"] = args.chapter
+        result["chapter_content_hash"] = chapter_meta.get("content_hash")
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_activate_version(args) -> int:
     project_dir = _project_dir(args)
     from .state_store import activate_version
@@ -2285,6 +2329,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="集纲 medium/high 容量风险的一次性编剧决定（无风险时系统记录 not_applicable）",
     )
     p.set_defaults(func=cmd_confirm_stage)
+
+    p = sub.add_parser("confirm-stages", help="编剧一次性确认多个已审核阶段版本（上游重绑批量确认）")
+    p.add_argument("--dir", required=True)
+    p.add_argument("--stages", required=True, help="逗号分隔阶段：adaptation,story_outline,episode_outline")
+    p.add_argument("--operator", required=True, help="实际确认人的可审计标识，不得由 Agent 冒充 writer")
+    p.add_argument("--confirmation-ref", required=True, help="用户明确确认所在消息、评论或记录的引用")
+    p.add_argument("--override-reason", default="")
+    p.add_argument(
+        "--capacity-decision",
+        choices=["accept_current_plan", "changes_recorded"],
+        default=None,
+        help="集纲 medium/high 容量风险的一次性编剧决定（批量确认时对所有阶段统一生效）",
+    )
+    p.set_defaults(func=cmd_confirm_stages)
+
+    p = sub.add_parser("locate-span", help="事件提取半自动 span 定位：给定原文片段自动算 0-based 左闭右开坐标")
+    p.add_argument("--dir", required=True)
+    p.add_argument("--chapter", type=int, required=True, help="章节号（从 1 开始）")
+    p.add_argument("--text", required=True, help="原文片段（事件核心文本）")
+    p.add_argument("--occurrence", type=int, default=1, help="第几次出现，默认 1")
+    p.add_argument("--fuzzy", action="store_true", help="弱匹配：仅容忍空白差异")
+    p.set_defaults(func=cmd_locate_span)
 
     p = sub.add_parser("get-episode-context")
     p.add_argument("--dir", required=True)

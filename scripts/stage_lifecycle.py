@@ -20,10 +20,12 @@ from .common import (
     stable_hash,
 )
 from .state_store import (
+    artifact_versions,
     commit_artifact,
     load_config,
     load_manifest,
     resolve_active,
+    update_artifact_meta,
     update_artifact_status,
 )
 
@@ -67,6 +69,20 @@ def _binding(project_dir: Path, kind: str, *, required: bool = False) -> dict | 
     }
 
 
+def _binding_unchanged(binding: dict, current: dict) -> bool:
+    """绑定是否"实质未变"（P1）。
+
+    上游 content_hash 双方都有且相同 → 视为未变，即使 version 号变化（例如
+    事件资产仅做 span 聚焦修正时，下游改编指引/大纲内容一字未变，不应重签）。
+    任一侧缺少 content_hash（旧产物）→ 退回严格的 version 校验，避免误放行。
+    """
+    expected_hash = binding.get("content_hash")
+    current_hash = current["record"].get("content_hash")
+    if expected_hash and current_hash:
+        return expected_hash == current_hash
+    return current["version"] == binding.get("version")
+
+
 def _record_is_stale(project_dir: Path, record: dict) -> list[str]:
     problems: list[str] = []
     meta = record.get("meta") or {}
@@ -79,10 +95,10 @@ def _record_is_stale(project_dir: Path, record: dict) -> list[str]:
         if not current:
             problems.append(f"上游 {binding.get('kind')} 已不存在")
             continue
-        current_record = current["record"]
-        if current["version"] != binding.get("version") or current_record.get("content_hash") != binding.get("content_hash"):
+        if not _binding_unchanged(binding, current):
             problems.append(
                 f"上游 {binding.get('kind')} 已从 {binding.get('version')} 变化为 {current['version']}"
+                f"（content_hash 不同）"
             )
     return problems
 
@@ -222,7 +238,7 @@ def save_stage_artifact(
         "upstream_bindings": stage_context.get("upstream_bindings", []),
     }
     meta.update(extra_meta or {})
-    return commit_artifact(
+    result = commit_artifact(
         project_dir,
         STAGE_KINDS[stage],
         content=content,
@@ -230,6 +246,73 @@ def save_stage_artifact(
         status="needs_writer_confirmation",
         ext=ext,
         meta=meta,
+    )
+    carried = _carry_forward_confirmation(
+        project_dir, STAGE_KINDS[stage], result["version"], result["content_hash"]
+    )
+    if carried:
+        result["carried_forward"] = True
+        result["carried_from"] = carried["carried_from"]
+    return result
+
+
+def _carry_forward_confirmation(
+    project_dir: Path, kind: str, version: str, content_hash: str
+) -> dict | None:
+    """P1：重绑产物 content_hash 与已确认旧版完全相同 → 自动沿用旧确认。
+
+    上游 content_hash 真变仍会触发完整重绑（防过期底线），但重绑后若内容
+    一字未变，编剧不应再确认一次。沿用旧确认的 operator 与确认信息，并在
+    新版本 meta 中记录 carried_from 供审计。
+    """
+    for record in artifact_versions(project_dir, kind):
+        if record.get("version") == version:
+            continue
+        if record.get("status") != "approved":
+            continue
+        if record.get("content_hash") != content_hash:
+            continue
+        operator = (record.get("meta") or {}).get("confirmation_operator")
+        operator = operator or record.get("status_operator") or "writer"
+        reason_note = (record.get("meta") or {}).get("confirmation_reason") or record.get("reason") or ""
+        update_artifact_status(
+            project_dir,
+            kind,
+            version,
+            status="approved",
+            operator=operator,
+            reason=(
+                f"沿用已确认版本 {record['version']} 的确认"
+                f"（content_hash 完全相同，P1 免重签）"
+            ),
+        )
+        update_artifact_meta(
+            project_dir,
+            kind,
+            version,
+            update={
+                "carried_from": record["version"],
+                "carried_forward": True,
+                "carried_at": now_iso(),
+                "confirmation_operator": operator,
+                "confirmation_reason": reason_note,
+            },
+        )
+        return {"carried_from": record["version"], "operator": operator}
+    return None
+
+
+def _stage_review_ok(project_dir: Path, stage: str, version: str, record: dict) -> bool:
+    """当前阶段版本是否有同源绑定且通过的阶段审核。"""
+    review = resolve_active(project_dir, f"stage_review_{stage}")
+    if not review:
+        return False
+    meta = review["record"].get("meta") or {}
+    return (
+        meta.get("stage") == stage
+        and meta.get("artifact_version") == version
+        and meta.get("artifact_hash") == record.get("content_hash")
+        and meta.get("verdict") in ("pass", "warning")
     )
 
 
@@ -254,20 +337,25 @@ def confirm_stage(
     if not resolved or resolved["version"] != version:
         raise ValueError(f"只能确认当前活动版本：{kind}/{version}")
     record = resolved["record"]
+    meta = record.get("meta") or {}
+    if record.get("status") == "approved" and meta.get("carried_forward"):
+        # P1：该版本已由保存时自动沿用旧确认，确认命令幂等返回。
+        result = {"version": version, "status": "approved", "carried_forward": True}
+        if meta.get("carried_from"):
+            result["carried_from"] = meta["carried_from"]
+        if stage == "episode_outline":
+            result["capacity_decision"] = capacity_decision_for(
+                project_dir,
+                outline_version=version,
+                outline_hash=record.get("content_hash") or "",
+            )
+        return result
     stale = _record_is_stale(project_dir, record)
     if stale:
         raise ValueError("不能确认已过期产物：" + "；".join(stale))
-    review = resolve_active(project_dir, f"stage_review_{stage}")
-    review_ok = False
-    if review:
-        meta = review["record"].get("meta") or {}
-        review_ok = (
-            meta.get("stage") == stage
-            and meta.get("artifact_version") == version
-            and meta.get("artifact_hash") == record.get("content_hash")
-            and meta.get("verdict") in ("pass", "warning")
-        )
-    if not review_ok and not str(review_override_reason or "").strip():
+    if not _stage_review_ok(project_dir, stage, version, record) and not str(
+        review_override_reason or ""
+    ).strip():
         raise ValueError("缺少与当前版本同源绑定且通过的阶段审核；如人工完整审核，请提供 override reason")
     capacity_payload = None
     if stage == "episode_outline":
@@ -313,6 +401,66 @@ def confirm_stage(
         )
         result["capacity_decision"] = decision_record
     return result
+
+
+def confirm_stages(
+    project_dir: Path,
+    *,
+    stages: list[str],
+    operator: str,
+    confirmation_ref: str,
+    review_override_reason: str | None = None,
+    capacity_decisions: dict | None = None,
+) -> dict:
+    """P1：多阶段重绑合并为一次批量确认。
+
+    先对全部阶段做统一预检（版本存在、未过期、审核通过/override），全部通过
+    后再逐个确认，避免半途失败造成部分已确认、部分未确认的不一致状态。
+    """
+    if not stages:
+        raise ValueError("批量确认至少需要一个阶段")
+    unknown = [s for s in stages if s not in STAGE_KINDS]
+    if unknown:
+        raise ValueError(f"未知阶段：{', '.join(unknown)}")
+    capacity_decisions = capacity_decisions or {}
+    if not str(operator or "").strip():
+        raise ValueError("确认阶段必须记录实际确认人 operator")
+    if not str(confirmation_ref or "").strip():
+        raise ValueError("确认阶段必须提供用户明确确认的 confirmation_ref")
+    preflight: list[tuple[str, str, dict]] = []
+    for stage in stages:
+        kind = STAGE_KINDS[stage]
+        resolved = resolve_active(project_dir, kind)
+        if not resolved:
+            raise ValueError(f"缺少 {stage} 产物")
+        record = resolved["record"]
+        stale = _record_is_stale(project_dir, record)
+        if stale:
+            raise ValueError(f"不能确认已过期产物：{stage}：" + "；".join(stale))
+        if record.get("status") == "approved" and (record.get("meta") or {}).get("carried_forward"):
+            continue  # 已自动沿用旧确认，无需再确认
+        if not _stage_review_ok(project_dir, stage, resolved["version"], record) and not str(
+            review_override_reason or ""
+        ).strip():
+            raise ValueError(
+                f"缺少 {stage} 与当前版本同源绑定且通过的阶段审核；"
+                "如人工完整审核，请提供 override reason"
+            )
+        preflight.append((stage, resolved["version"], record))
+    results = []
+    for stage, version, _record in preflight:
+        results.append(
+            confirm_stage(
+                project_dir,
+                stage=stage,
+                version=version,
+                operator=operator,
+                confirmation_ref=confirmation_ref,
+                review_override_reason=review_override_reason,
+                capacity_decision=capacity_decisions.get(stage),
+            )
+        )
+    return {"stages": results, "carried_forward_skipped": len(stages) - len(preflight)}
 
 
 def compact_event_catalog(events: list[dict], *, text_limit: int = 96) -> list[dict]:
