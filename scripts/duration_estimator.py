@@ -17,6 +17,7 @@ DEFAULT_DIALOGUE_CPM = 150
 DEFAULT_ACTION_SECONDS = 2.5
 DEFAULT_REACTION_SECONDS = 0.8
 DEFAULT_TRANSITION_SECONDS = 1.2
+DEFAULT_DEVIATION_TOLERANCE_SECONDS = 2.0
 
 
 def _dialogue_chars(parsed: dict) -> int:
@@ -65,12 +66,22 @@ def estimate_episode_seconds(
     }
 
 
-def _deviation(estimated_seconds: float, preferred_seconds: list | None) -> str:
+def _deviation(
+    estimated_seconds: float,
+    preferred_seconds: list | None,
+    *,
+    tolerance_seconds: float = DEFAULT_DEVIATION_TOLERANCE_SECONDS,
+) -> str:
+    """Deviation with a symmetric tolerance band.
+
+    A few seconds of drift is inside estimator noise and must not trigger a
+    rewrite suggestion (e.g. 152s against a 90-150s target is acceptable).
+    """
     if isinstance(preferred_seconds, list) and len(preferred_seconds) == 2:
         low, high = preferred_seconds
-        if estimated_seconds < low:
+        if estimated_seconds < low - tolerance_seconds:
             return "below"
-        if estimated_seconds > high:
+        if estimated_seconds > high + tolerance_seconds:
             return "above"
         return "within"
     return "unknown"
