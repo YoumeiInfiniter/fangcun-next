@@ -4,6 +4,7 @@ import unittest
 
 from scripts.duration_estimator import (
     DEFAULT_DIALOGUE_CPM,
+    compute_draft_metrics,
     estimate_episode_seconds,
     forecast_duration,
     render_duration_report,
@@ -57,6 +58,21 @@ class DurationEstimatorTests(unittest.TestCase):
         report = render_duration_report(forecast)
         self.assertIn("仅提示，不阻断", report)
         self.assertIn("第1集", report)
+
+    def test_draft_metrics_bound_and_deviation_above(self):
+        metrics = compute_draft_metrics(
+            SCRIPT,
+            episode=1,
+            context_hash="c" * 64,
+            draft_version="v001",
+            draft_hash="d" * 64,
+            preferred_seconds=[1, 2],
+        )
+        self.assertEqual(metrics["draft_version"], "v001")
+        self.assertEqual(metrics["draft_hash"], "d" * 64)
+        self.assertEqual(metrics["deviation"], "above")
+        self.assertFalse(metrics["blocking"])
+        self.assertEqual(metrics["source"], "system")
 
 
 if __name__ == "__main__":

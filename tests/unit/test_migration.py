@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.migration import map_legacy_config, migrate_all, migrate_project
+from scripts.migration import map_legacy_config, mark_legacy_must_keep, migrate_all, migrate_project
 
 
 class MigrationTests(unittest.TestCase):
@@ -83,7 +83,14 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(len(reports), 1)
         self.assertNotIn("error", reports[0])
 
+    def test_mark_legacy_must_keep_never_guesses_category(self):
+        marked = mark_legacy_must_keep(
+            {"episode": 1, "must_keep": ["旧必保留", {"text": "已绑定", "event_id": "E1"}]}
+        )
+        self.assertEqual(marked["outline_schema_version"], "v2")
+        self.assertEqual(marked["must_keep"][0]["legacy_classification"], "legacy_unspecified")
+        self.assertEqual(marked["must_keep"][1]["event_id"], "E1")
+
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -2,10 +2,12 @@
 
 import os
 import unittest
+from unittest import mock
 
 from scripts.model_adapter import (
     ModelUnavailableError,
     build_payload,
+    call_generate,
     parse_json_response,
     resolve_api_key,
 )
@@ -68,6 +70,33 @@ class ModelAdapterTests(unittest.TestCase):
             self.assertEqual(resolve_api_key({"api_key_env": "MY_CUSTOM_KEY"}), "sk-custom")
         finally:
             os.environ.pop("MY_CUSTOM_KEY", None)
+
+    def test_call_generate_fails_honestly_on_finish_reason_length(self):
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "choices": [
+                        {
+                            "finish_reason": "length",
+                            "message": {"content": "不完整的 JSON"},
+                        }
+                    ]
+                }
+
+        with mock.patch("requests.post", return_value=FakeResponse()):
+            with self.assertRaisesRegex(RuntimeError, "finish_reason=length"):
+                call_generate(
+                    stage="review",
+                    system_prompt="s",
+                    user_context="u",
+                    model_config={
+                        "api_url": "https://example.invalid/v1",
+                        "api_key_env": "MY_CUSTOM_KEY",
+                    },
+                )
 
 
 if __name__ == "__main__":
