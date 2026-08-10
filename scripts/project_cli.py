@@ -34,6 +34,8 @@ from .state_store import (
     record_artifact,
     save_config,
     draft_meta_record,
+    update_artifact_meta,
+    update_artifact_status,
 )
 
 
@@ -62,6 +64,13 @@ def _load_json_file(path: Path, label: str) -> Any:
         return read_json(path)
     except json.JSONDecodeError as exc:
         raise CliError(f"{label}不是合法 JSON：{path}（{exc}）")
+
+
+def _warn_experimental_api() -> None:
+    print(
+        "注意：API Mode 是实验性 Provider Adapter，不是默认生产路径。"
+        "只有在用户明确要求或项目配置明确启用时才能调用；失败会诚实停止，不自动重试或降级。"
+    )
 
 
 def cmd_init(args) -> int:
@@ -454,6 +463,18 @@ def cmd_save_episode_outline(args) -> int:
         episodes = data.get("episodes", data) if isinstance(data, dict) else data
     if not isinstance(episodes, list) or not episodes:
         raise CliError("集纲必须是数组或含 episodes 数组的对象")
+    from .migration import mark_legacy_must_keep
+
+    episodes = [
+        mark_legacy_must_keep(outline)
+        if (
+            isinstance(outline, dict)
+            and not outline.get("required_story_beats")
+            and not outline.get("required_quotes")
+        )
+        else outline
+        for outline in episodes
+    ]
     events_path = active_artifact_path(project_dir, "source_events")
     events_data = read_json(events_path) if events_path else []
     events = events_data.get("events", events_data) if isinstance(events_data, dict) else events_data
@@ -478,7 +499,18 @@ def cmd_save_episode_outline(args) -> int:
         missing_events = [eid for eid in outline.get("source_event_ids", []) or [] if eid not in events_by_id]
         if missing_events:
             raise CliError(f"第{ep}集引用不存在的 source_event_ids：{', '.join(missing_events)}")
+        v2_missing_events = []
+        for beat in outline.get("required_story_beats", []) or []:
+            v2_missing_events.extend(eid for eid in beat.get("event_ids", []) or [] if eid not in events_by_id)
+        for beat in outline.get("beat_plan", []) or []:
+            v2_missing_events.extend(eid for eid in beat.get("event_ids", []) or [] if eid not in events_by_id)
+        if v2_missing_events:
+            raise CliError(f"第{ep}集 required_story_beats/beat_plan 引用不存在的事件：{', '.join(dict.fromkeys(v2_missing_events))}")
         selected_ids = set(outline.get("source_event_ids", []) or [])
+        for beat in outline.get("required_story_beats", []) or []:
+            selected_ids.update(beat.get("event_ids", []) or [])
+        for beat in outline.get("beat_plan", []) or []:
+            selected_ids.update(beat.get("event_ids", []) or [])
         selected_chapters = {
             int(chapter)
             for chapter in outline.get("source_chapters", []) or []
@@ -495,12 +527,37 @@ def cmd_save_episode_outline(args) -> int:
             for item in outline.get("adaptation_basis", []) or []
             if isinstance(item, dict) and item.get("id")
         }
+        project_rule_ids = {
+            str(item.get("id"))
+            for item in (load_config(project_dir).get("project_specific_requirements") or [])
+            if isinstance(item, dict) and item.get("id")
+        }
+        unknown_rule_refs = [
+            rule_id for rule_id in outline.get("project_rule_refs", []) or []
+            if rule_id not in project_rule_ids
+        ]
+        if unknown_rule_refs:
+            raise CliError(f"第{ep}集 project_rule_refs 引用不存在的项目规则：{', '.join(unknown_rule_refs)}")
+        for beat in outline.get("required_story_beats", []) or []:
+            decision_id = beat.get("adaptation_decision_id")
+            if decision_id and decision_id not in decision_ids:
+                raise CliError(f"第{ep}集 required_story_beat {beat.get('id', beat.get('text'))} 引用不存在的 adaptation_decision_id：{decision_id}")
+        for quote_item in outline.get("required_quotes", []) or []:
+            source_event_id = quote_item.get("source_event_id")
+            if source_event_id not in events_by_id or source_event_id not in selected_ids:
+                raise CliError(f"第{ep}集 required_quote 引用的事件 {source_event_id} 不属于本集有效事件")
         for item in outline.get("must_keep", []) or []:
             if isinstance(item, str):
                 if item not in searchable:
                     raise CliError(
                         f"第{ep}集 must_keep「{item}」没有绑定 event_id/adaptation_decision_id，"
                         "且无法在本集引用事件中解析"
+                    )
+                continue
+            if isinstance(item, dict) and item.get("legacy_classification") == "legacy_unspecified":
+                if str(item.get("text") or "") not in searchable:
+                    raise CliError(
+                        f"第{ep}集 must_keep「{item.get('text')}」无法在本集引用事件中解析"
                     )
                 continue
             event_id = item.get("event_id")
@@ -551,7 +608,14 @@ def cmd_save_episode_outline(args) -> int:
             for item in evidence.get("coverage", []) or []
             if item.get("requested")
             and item.get("omitted")
-            and item.get("anchor_type") in ("event", "chapter", "dialogue_anchor", "must_keep")
+            and item.get("anchor_type") in (
+                "event",
+                "chapter",
+                "dialogue_anchor",
+                "must_keep",
+                "required_story_beat",
+                "required_quote",
+            )
         ]
         if unresolved:
             details = "；".join(
@@ -650,11 +714,33 @@ def cmd_save_episode_outline(args) -> int:
         ext="md",
         meta={**lifecycle_meta, "json_outline_version": result["version"]},
     )
+    from .stage_lifecycle import aggregate_density_reports
+
+    bound_density_reports = [
+        {
+            "episode": int(outline["episode"]),
+            **episode_density_report(
+                outline,
+                events_by_id,
+                outline_version=result["version"],
+                outline_hash=result["content_hash"],
+            ),
+        }
+        for outline in ordered
+    ]
+    update_artifact_meta(
+        project_dir,
+        "episode_outline",
+        result["version"],
+        update={"density_reports": bound_density_reports},
+    )
+    density_aggregate = aggregate_density_reports(bound_density_reports)
     if args.outline_md:
         print("提示：--outline-md 已弃用；可读版现在始终由集纲 JSON 自动生成，避免版本漂移。")
     print(f"集纲已保存：{result['path']}（{result['version']}，共 {len(merged)} 集）")
     print(f"同步可读版：{md_result['path']}（sync={outline_sync_id[:12]}）")
     print(f"合并报告：{json.dumps(merge_report, ensure_ascii=False)}")
+    print(density_aggregate["summary"])
     return 0
 
 
@@ -682,6 +768,11 @@ def cmd_get_episode_context(args) -> int:
     print(f"context_hash：{context['context_hash']}")
     print(f"Prompt 包：{path}")
     print(f"Craft 模块：{context['selected_craft_modules']}")
+    from .stage_lifecycle import render_density_summary
+
+    density_report = context.get("advisory_timing", {}).get("density_report")
+    if density_report:
+        print(render_density_summary(density_report))
     _print_pending_revisions(project_dir, args.episode)
     if context["completeness"]["warnings"]:
         for warning in context["completeness"]["warnings"]:
@@ -705,6 +796,8 @@ def cmd_save_draft(args) -> int:
     from .script_validator import validate_script
 
     config = load_config(project_dir)
+    workflow_mode = str(getattr(args, "workflow_mode", None) or "standard")
+    generation_mode = str(getattr(args, "generation_mode", None) or "host_agent")
     content = Path(args.file).expanduser().resolve()
     if not content.exists():
         raise CliError(f"草稿文件不存在：{content}")
@@ -795,6 +888,9 @@ def cmd_save_draft(args) -> int:
         "episode_outline_version": None,
         "source_events_version": None,
         "origin": origin,
+        "workflow_mode": workflow_mode,
+        "generation_mode": generation_mode,
+        "semantic_review_status": "unreviewed" if workflow_mode == "quick_draft" else "pending_review",
         **ticket_bindings,
     }
     context_snapshot = _load_context_snapshot_by_hash(project_dir, args.episode, context_hash)
@@ -806,12 +902,48 @@ def cmd_save_draft(args) -> int:
         content=text,
         episode=args.episode,
         source="model_rewrite" if origin == "automatic_rewrite" else "ai",
-        status="draft",
+        status="unreviewed_draft" if workflow_mode == "quick_draft" else "draft",
         ext="txt",
         meta=meta,
     )
+    from .duration_estimator import compute_draft_metrics
+
+    outline_suggested = context_snapshot.get("episode_outline", {}).get("suggested_seconds")
+    preferred_seconds = config.get("preferred_episode_seconds") or outline_suggested
+    metrics = compute_draft_metrics(
+        text,
+        episode=args.episode,
+        context_hash=context_hash,
+        draft_version=result["version"],
+        draft_hash=draft_hash,
+        preferred_seconds=preferred_seconds,
+    )
+    ensure_valid(metrics, "draft-metrics.schema.json")
+    metrics_result = commit_artifact(
+        project_dir,
+        "draft_metrics",
+        content=metrics,
+        episode=args.episode,
+        source="system",
+        status="approved",
+        ext="json",
+        meta={
+            "context_hash": context_hash,
+            "draft_hash": draft_hash,
+            "draft_version": result["version"],
+        },
+    )
     _print_pending_revisions(project_dir, args.episode)
     print(f"草稿已保存：{result['path']}（{result['version']}，draft_hash={draft_hash[:12]}，context_hash={context_hash[:12]}）")
+    print(
+        f"草稿指标已保存：{metrics_result['path']}"
+        f"（约 {metrics['estimated_seconds']} 秒，偏差 {metrics['deviation']}，仅提示）"
+    )
+    if workflow_mode == "quick_draft":
+        print(
+            "快速草稿：workflow_mode=quick_draft，未执行语义审核；"
+            "不得直接定稿或更新连续性，编剧可稍后要求标准审核。"
+        )
     revision_ids = list(getattr(args, "apply_revision", None) or [])
     if revision_ids:
         from .revision_manager import mark_revisions_applied
@@ -827,7 +959,10 @@ def cmd_save_draft(args) -> int:
             print(f"已绑定 applied 的修改意见：{applied} 条")
         else:
             print("内容未变化（幂等复用旧版本），不绑定 applied；请先实际修改再保存。")
-    print(f"下一步：review --episode {args.episode}")
+    if workflow_mode == "quick_draft":
+        print(f"下一步（可选标准审核）：review --episode {args.episode}")
+    else:
+        print(f"下一步：review --episode {args.episode}")
     return 0
 
 
@@ -1017,11 +1152,48 @@ def cmd_review(args) -> int:
             "草稿绑定的 context_hash 与当前上下文不一致，拒绝审核。"
             "请先重新生成与草稿一致的上下文，或从不可变快照中选择正确版本。"
         )
+    from .duration_estimator import compute_draft_metrics, load_bound_draft_metrics
+
+    try:
+        draft_metrics = load_bound_draft_metrics(
+            project_dir,
+            args.episode,
+            draft_version,
+            draft_meta["draft_hash"],
+        )
+    except KeyError:
+        # Backfill for historical drafts: compute on first review and mark it.
+        draft_metrics = compute_draft_metrics(
+            draft_text,
+            episode=args.episode,
+            context_hash=context["context_hash"],
+            draft_version=draft_version,
+            draft_hash=draft_meta["draft_hash"],
+            preferred_seconds=config.get("preferred_episode_seconds")
+            or context.get("episode_outline", {}).get("suggested_seconds"),
+        )
+        draft_metrics["backfilled_by_system"] = True
+        commit_artifact(
+            project_dir,
+            "draft_metrics",
+            content=draft_metrics,
+            episode=args.episode,
+            source="system",
+            status="approved",
+            ext="json",
+            meta={
+                "context_hash": context["context_hash"],
+                "draft_hash": draft_meta["draft_hash"],
+                "draft_version": draft_version,
+                "backfilled_by_system": True,
+            },
+        )
     review_context = {
         **context,
         "script_draft": draft_text,
         "draft_hash": draft_meta["draft_hash"],
         "draft_version": draft_version,
+        "draft_metrics": draft_metrics,
     }
     bundle = render_prompt_bundle(review_context, role="reviewer", config=config)
     bundle += (
@@ -1029,6 +1201,8 @@ def cmd_review(args) -> int:
         f"context_hash: {context['context_hash']}\n"
         f"draft_hash: {draft_meta['draft_hash']}\n"
         f"draft_version: {draft_version}\n\n"
+        f"## 草稿确定性时长指标（draft_metrics，系统计算，模型不得覆盖）\n"
+        f"{json.dumps(draft_metrics, ensure_ascii=False, indent=2)}\n\n"
         f"## 待审草稿\n{draft_text}\n"
     )
     path = _review_bundle_path(project_dir, args.episode)
@@ -1037,6 +1211,7 @@ def cmd_review(args) -> int:
     print(f"审核上下文包已写入：{path}（context_hash={context['context_hash']}）")
     _print_pending_revisions(project_dir, args.episode)
     if args.api:
+        _warn_experimental_api()
         from .model_adapter import call_generate
         from .model_adapter import parse_json_response
 
@@ -1056,6 +1231,7 @@ def cmd_review(args) -> int:
             expected_context_hash=context["context_hash"],
             expected_draft_version=draft_version,
             expected_draft_hash=draft_meta["draft_hash"],
+            review_source="experimental_api",
         )
     else:
         print(
@@ -1073,6 +1249,7 @@ def _save_review(
     expected_context_hash: str,
     expected_draft_version: str,
     expected_draft_hash: str,
+    review_source: str = "host_agent",
 ) -> None:
     report_data, normalize_errors = _normalize_review_report(report_data)
     if normalize_errors:
@@ -1088,6 +1265,28 @@ def _save_review(
     if report_data["draft_version"] != expected_draft_version:
         raise CliError("审核报告 draft_version 与草稿版本不一致，拒绝保存")
     context = _load_context_snapshot_by_hash(project_dir, episode, expected_context_hash)
+    from .duration_estimator import load_bound_draft_metrics
+
+    draft_metrics = load_bound_draft_metrics(
+        project_dir,
+        episode,
+        expected_draft_version,
+        expected_draft_hash,
+    )
+    model_timing = report_data.get("timing_advisory")
+    report_data["timing_advisory"] = {
+        "estimated_seconds": draft_metrics["estimated_seconds"],
+        "estimated_range": draft_metrics["estimated_range"],
+        "preferred_seconds": draft_metrics["preferred_seconds"],
+        "deviation": draft_metrics["deviation"],
+        "blocking": False,
+    }
+    if (
+        isinstance(model_timing, dict)
+        and model_timing.get("estimated_seconds") is not None
+        and model_timing.get("estimated_seconds") != draft_metrics["estimated_seconds"]
+    ):
+        report_data["legacy_model_estimate"] = model_timing
     report_data["verdict"] = _derive_verdict(report_data.get("issues"))
     ensure_valid(report_data, "review-report.schema.json")
     for issue in report_data.get("issues", []) or []:
@@ -1099,14 +1298,28 @@ def _save_review(
         "review",
         content=report_data,
         episode=episode,
-        source="ai",
+        source=review_source,
         status="approved",
         ext="json",
         meta={
             "context_hash": expected_context_hash,
             "draft_hash": expected_draft_hash,
             "draft_version": expected_draft_version,
+            "review_source": review_source,
+            "semantic_review_status": "reviewed",
+            "draft_metrics_hash": sha256_text(
+                json.dumps(draft_metrics, ensure_ascii=False, sort_keys=True)
+            ),
         },
+    )
+    update_artifact_status(
+        project_dir,
+        "script_draft",
+        expected_draft_version,
+        status="reviewed",
+        episode=episode,
+        operator=review_source,
+        reason="semantic review saved with bound draft_metrics",
     )
     print(f"审核报告已保存：{result['path']}（{result['version']}）")
     print(f"结论：{report_data.get('verdict')} | {report_data.get('summary')}")
@@ -1385,6 +1598,7 @@ def cmd_rewrite(args) -> int:
     print(f"rewrite ticket：{ticket['ticket_id']}")
     _print_pending_revisions(project_dir, args.episode)
     if args.api:
+        _warn_experimental_api()
         from .model_adapter import call_generate
         from .common import strip_code_fence
 
@@ -1405,6 +1619,8 @@ def cmd_rewrite(args) -> int:
                 file=str(temp_draft),
                 context_hash=review_data["context_hash"],
                 rewrite_ticket=ticket["ticket_id"],
+                workflow_mode="standard",
+                generation_mode="experimental_api",
             )
         )
         if args.draft_out:
@@ -1427,6 +1643,22 @@ def cmd_approve(args) -> int:
     text = Path(args.file).expanduser().resolve()
     if not text.exists():
         raise CliError(f"定稿文件不存在：{text}")
+    active_draft = active_artifact_path(project_dir, "script_draft", args.episode)
+    if active_draft and active_draft.exists():
+        draft_version = active_version_id(project_dir, "script_draft", args.episode)
+        draft_meta = draft_meta_record(project_dir, args.episode, draft_version) if draft_version else None
+        draft_record = artifact_version_record(project_dir, "script_draft", args.episode, draft_version) if draft_version else None
+        if (
+            draft_meta
+            and draft_meta.get("workflow_mode") == "quick_draft"
+            and draft_record
+            and draft_record.get("status") != "reviewed"
+            and sha256_text(text.read_text(encoding="utf-8")) == draft_meta.get("draft_hash")
+        ):
+            raise CliError(
+                "快速草稿未执行语义审核，不能直接作为定稿或更新连续性。"
+                "请先执行 review/save-review，或改用人工上传版本并显式说明。"
+            )
     approve_result = apply_approved_script(
         project_dir,
         args.episode,
@@ -1706,6 +1938,18 @@ def cmd_review_stage(args) -> int:
         + f"upstream_bindings: {json.dumps(context.get('upstream_bindings', []), ensure_ascii=False)}\n"
         + f"\n## 当前阶段产物\n{path.read_text(encoding='utf-8')}\n"
     )
+    if args.stage == "episode_outline":
+        from .stage_lifecycle import aggregate_density_reports
+
+        reports = (record.get("meta") or {}).get("density_reports", []) or []
+        aggregate = aggregate_density_reports(reports)
+        bundle += (
+            "\n\n## 集纲容量风险摘要（一次性汇总，编剧确认时必须记录决定）\n"
+            + aggregate["summary"]
+            + "\n高风险集：" + str(aggregate["high_episodes"])
+            + "\n中风险集：" + str(aggregate["medium_episodes"])
+            + "\n"
+        )
     out = project_dir / "state" / "prompt_bundles" / f"review_stage_{args.stage}_{version}.md"
     ensure_dir(out.parent)
     out.write_text(bundle, encoding="utf-8")
@@ -1713,6 +1957,7 @@ def cmd_review_stage(args) -> int:
         _print_bundle(out)
         return 0
     print(f"阶段审核上下文包已写入：{out}")
+    _warn_experimental_api()
     from .model_adapter import call_generate, parse_json_response
 
     config = load_config(project_dir)
@@ -1724,7 +1969,12 @@ def cmd_review_stage(args) -> int:
         model_config=config.get("model_config"),
         temperature=0.2,
     )
-    _save_stage_review_data(project_dir, args.stage, parse_json_response(text))
+    _save_stage_review_data(
+        project_dir,
+        args.stage,
+        parse_json_response(text),
+        review_source="experimental_api",
+    )
     return 0
 
 
@@ -1748,7 +1998,13 @@ def _artifact_quote_matches(quote: str, artifact_text: str) -> bool:
     return bool(normalized_quote) and normalized_quote in normalized_artifact
 
 
-def _save_stage_review_data(project_dir: Path, stage: str, data: Any) -> None:
+def _save_stage_review_data(
+    project_dir: Path,
+    stage: str,
+    data: Any,
+    *,
+    review_source: str = "host_agent",
+) -> None:
     from .stage_lifecycle import STAGE_KINDS, load_stage_context
 
     if not isinstance(data, dict):
@@ -1803,7 +2059,7 @@ def _save_stage_review_data(project_dir: Path, stage: str, data: Any) -> None:
         project_dir,
         f"stage_review_{stage}",
         content=data,
-        source="ai",
+        source=review_source,
         status="approved",
         ext="json",
         meta={
@@ -1812,6 +2068,7 @@ def _save_stage_review_data(project_dir: Path, stage: str, data: Any) -> None:
             "artifact_version": version,
             "artifact_hash": record.get("content_hash"),
             "verdict": data["verdict"],
+            "review_source": review_source,
         },
     )
     print(f"阶段审核已保存：{result['path']}（{data['verdict']}）")
@@ -1828,6 +2085,7 @@ def cmd_confirm_stage(args) -> int:
         operator=args.operator,
         confirmation_ref=args.confirmation_ref,
         review_override_reason=args.override_reason,
+        capacity_decision=getattr(args, "capacity_decision", None),
     )
     if args.stage == "episode_outline":
         md_version = active_version_id(project_dir, "episode_outline_md")
@@ -2020,6 +2278,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--operator", required=True, help="实际确认人的可审计标识，不得由 Agent 冒充 writer")
     p.add_argument("--confirmation-ref", required=True, help="用户明确确认所在消息、评论或记录的引用")
     p.add_argument("--override-reason", default="")
+    p.add_argument(
+        "--capacity-decision",
+        choices=["accept_current_plan", "changes_recorded"],
+        default=None,
+        help="集纲 medium/high 容量风险的一次性编剧决定（无风险时系统记录 not_applicable）",
+    )
     p.set_defaults(func=cmd_confirm_stage)
 
     p = sub.add_parser("get-episode-context")
@@ -2039,6 +2303,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--apply-revision", action="append", default=[], help="显式绑定已执行的修改意见 revision_id（可重复）")
     p.add_argument("--manual-edit", action="store_true", default=False, help="显式声明人工修改（取消该绑定下已签发的 rewrite ticket）")
     p.add_argument("--manual-reason", default="")
+    p.add_argument(
+        "--workflow-mode",
+        choices=["standard", "quick_draft"],
+        default="standard",
+        help="standard：Writer 一次 + Reviewer 一次；quick_draft：只 Writer，不冒充审核稿",
+    )
+    p.add_argument(
+        "--generation-mode",
+        choices=["host_agent", "experimental_api"],
+        default="host_agent",
+        help="记录产物来源；默认 host_agent，experimental_api 必须由用户显式选择",
+    )
     p.set_defaults(func=cmd_save_draft)
 
     p = sub.add_parser("review")

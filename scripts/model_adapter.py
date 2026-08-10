@@ -97,7 +97,14 @@ def call_generate(
     response.raise_for_status()
     data = response.json()
     try:
-        message = data["choices"][0]["message"]
+        choice = data["choices"][0]
+        finish_reason = str(choice.get("finish_reason") or "")
+        if finish_reason == "length":
+            raise RuntimeError(
+                "模型输出因 max_output_tokens 被截断（finish_reason=length），"
+                "禁止当作完整结果继续保存。请提高配置或改用 Host Agent Mode。"
+            )
+        message = choice["message"]
         content = message.get("content") or ""
         if not content.strip():
             reasoning = (message.get("reasoning_content") or "").strip()

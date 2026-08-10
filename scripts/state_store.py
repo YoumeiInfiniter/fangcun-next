@@ -524,7 +524,15 @@ def update_artifact_status(
     reason: str,
 ) -> dict:
     """Change workflow status without changing immutable artifact content."""
-    allowed = {"draft", "needs_writer_confirmation", "approved", "rejected", "superseded"}
+    allowed = {
+        "draft",
+        "unreviewed_draft",
+        "reviewed",
+        "needs_writer_confirmation",
+        "approved",
+        "rejected",
+        "superseded",
+    }
     if status not in allowed:
         raise ValueError(f"非法 artifact status：{status}")
     key = artifact_key(kind, episode)
@@ -554,6 +562,29 @@ def update_artifact_status(
         },
     )
     return {"kind": kind, "episode": episode, "version": version, "previous_status": previous, "status": status}
+
+
+def update_artifact_meta(
+    project_dir: Path,
+    kind: str,
+    version: str,
+    *,
+    episode: int | None = None,
+    update: dict | None = None,
+) -> dict:
+    """Attach derived/version-bound metadata without changing artifact content."""
+    key = artifact_key(kind, episode)
+    manifest = load_manifest(project_dir)
+    entry = manifest.get("artifacts", {}).get(key)
+    if not entry:
+        raise KeyError(f"artifact 不存在：{key}")
+    record = next((item for item in entry.get("versions", []) if item.get("version") == version), None)
+    if not record:
+        raise KeyError(f"artifact 版本不存在：{key}/{version}")
+    meta = record.setdefault("meta", {})
+    meta.update(update or {})
+    save_manifest(project_dir, manifest)
+    return record
 
 
 def is_approved(project_dir: Path, episode: int) -> bool:

@@ -65,6 +65,72 @@ def estimate_episode_seconds(
     }
 
 
+def _deviation(estimated_seconds: float, preferred_seconds: list | None) -> str:
+    if isinstance(preferred_seconds, list) and len(preferred_seconds) == 2:
+        low, high = preferred_seconds
+        if estimated_seconds < low:
+            return "below"
+        if estimated_seconds > high:
+            return "above"
+        return "within"
+    return "unknown"
+
+
+def compute_draft_metrics(
+    content: str,
+    *,
+    episode: int,
+    context_hash: str,
+    draft_version: str,
+    draft_hash: str,
+    preferred_seconds: list | None = None,
+    estimator_version: str = "v2",
+) -> dict:
+    """Deterministic per-draft metrics bound to context/draft version+hash."""
+    estimate = estimate_episode_seconds(content)
+    preferred_seconds = preferred_seconds if isinstance(preferred_seconds, list) else None
+    return {
+        "episode": episode,
+        "context_hash": context_hash,
+        "draft_version": draft_version,
+        "draft_hash": draft_hash,
+        "estimator_version": estimator_version,
+        "dialogue_chars": estimate["dialogue_chars"],
+        "action_chars": estimate["action_chars"],
+        "action_lines": estimate["action_lines"],
+        "reaction_count": estimate["reaction_count"],
+        "scene_count": estimate["scene_count"],
+        "estimated_seconds": estimate["estimated_seconds"],
+        "estimated_range": estimate["estimated_range"],
+        "preferred_seconds": preferred_seconds,
+        "deviation": _deviation(estimate["estimated_seconds"], preferred_seconds),
+        "blocking": False,
+        "source": "system",
+        "advisory_only": True,
+        "measurement_basis": "台词朗读时间+动作行执行时间+反应停顿+转场；仅供编剧预期",
+    }
+
+
+def load_bound_draft_metrics(
+    project_dir: Path,
+    episode: int,
+    draft_version: str,
+    draft_hash: str,
+) -> dict:
+    """Return the deterministic metrics bound to one exact draft version."""
+    from .state_store import artifact_versions, read_artifact_version
+
+    for record in artifact_versions(project_dir, "draft_metrics", episode):
+        data = read_artifact_version(project_dir, "draft_metrics", episode, record["version"])
+        if (
+            isinstance(data, dict)
+            and data.get("draft_version") == draft_version
+            and data.get("draft_hash") == draft_hash
+        ):
+            return data
+    raise KeyError(f"第{episode}集草稿 {draft_version}/{draft_hash[:12]} 没有绑定 draft_metrics")
+
+
 def forecast_duration(
     config: dict,
     scripts: list[tuple[int, str]],
@@ -114,4 +180,3 @@ def render_duration_report(forecast: dict) -> str:
     lines.append(f"全剧合计：约 {forecast['total_estimated_seconds']} 秒（{forecast['total_estimated_seconds'] / 60:.1f} 分钟）")
     lines.append("口径：台词朗读时间 + 动作执行时间 + 反应停顿 + 转场；仅提供预期，编剧可接受任何偏差。")
     return "\n".join(lines) + "\n"
-
