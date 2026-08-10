@@ -298,6 +298,28 @@ def _carry_forward_confirmation(
                 "confirmation_reason": reason_note,
             },
         )
+        if kind == "episode_outline":
+            # P2-2：carried 集纲把旧版本容量决定回填到新版本，保证按
+            # (新版本, 新 hash) 审计可追溯，不再落空。
+            old_decision = capacity_decision_for(
+                project_dir,
+                outline_version=record["version"],
+                outline_hash=record.get("content_hash") or "",
+            )
+            if old_decision:
+                jsonl_append(
+                    capacity_decisions_path(project_dir),
+                    {
+                        "outline_version": version,
+                        "outline_hash": content_hash,
+                        "decision": old_decision.get("decision"),
+                        "operator": operator,
+                        "confirmation_ref": old_decision.get("confirmation_ref") or "",
+                        "aggregate_summary": old_decision.get("aggregate_summary"),
+                        "carried_from_version": record["version"],
+                        "created_at": now_iso(),
+                    },
+                )
         return {"carried_from": record["version"], "operator": operator}
     return None
 
@@ -314,6 +336,30 @@ def _stage_review_ok(project_dir: Path, stage: str, version: str, record: dict) 
         and meta.get("artifact_hash") == record.get("content_hash")
         and meta.get("verdict") in ("pass", "warning")
     )
+
+
+def _capacity_gate_for(record: dict, capacity_decision: str | None) -> tuple[dict, str]:
+    """集纲容量门禁（P2-1 共用）：校验并推导容量决定，不写入。
+
+    返回 (aggregate, decision)；medium/high 风险且未提供合法决定时抛错。
+    confirm_stage 与 confirm_stages 预检共用同一逻辑，避免两处规则漂移，
+    并让批量确认在预检阶段就整体拒绝，不产生"前面已确认、后面失败"的部分提交。
+    """
+    meta = record.get("meta") or {}
+    reports = meta.get("density_reports", []) or []
+    aggregate = aggregate_density_reports(reports)
+    decision = str(capacity_decision or "").strip()
+    if aggregate["high_episodes"] or aggregate["medium_episodes"]:
+        if decision not in ("accept_current_plan", "changes_recorded"):
+            raise ValueError(
+                "集纲存在 medium/high 容量风险，编剧必须一次性确认或记录调整。\n"
+                + aggregate["summary"]
+                + "\n请使用 --capacity-decision accept_current_plan（接受当前规划）"
+                "或 changes_recorded（已记录调整后重新保存集纲）。"
+            )
+    else:
+        decision = "not_applicable"
+    return aggregate, decision
 
 
 def confirm_stage(
@@ -359,20 +405,7 @@ def confirm_stage(
         raise ValueError("缺少与当前版本同源绑定且通过的阶段审核；如人工完整审核，请提供 override reason")
     capacity_payload = None
     if stage == "episode_outline":
-        meta = record.get("meta") or {}
-        reports = meta.get("density_reports", []) or []
-        aggregate = aggregate_density_reports(reports)
-        decision = str(capacity_decision or "").strip()
-        if aggregate["high_episodes"] or aggregate["medium_episodes"]:
-            if decision not in ("accept_current_plan", "changes_recorded"):
-                raise ValueError(
-                    "集纲存在 medium/high 容量风险，编剧必须一次性确认或记录调整。\n"
-                    + aggregate["summary"]
-                    + "\n请使用 --capacity-decision accept_current_plan（接受当前规划）"
-                    "或 changes_recorded（已记录调整后重新保存集纲）。"
-                )
-        else:
-            decision = "not_applicable"
+        aggregate, decision = _capacity_gate_for(record, capacity_decision)
         capacity_payload = {
             "aggregate": aggregate,
             "decision": decision,
@@ -446,6 +479,10 @@ def confirm_stages(
                 f"缺少 {stage} 与当前版本同源绑定且通过的阶段审核；"
                 "如人工完整审核，请提供 override reason"
             )
+        if stage == "episode_outline":
+            # P2-1：容量门禁并入预检——缺/非法容量决定在预检阶段整体拒绝，
+            # 不会在确认循环中途失败留下"前面已确认、后面失败"的部分提交。
+            _capacity_gate_for(record, capacity_decisions.get(stage))
         preflight.append((stage, resolved["version"], record))
     results = []
     for stage, version, _record in preflight:
