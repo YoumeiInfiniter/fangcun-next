@@ -31,7 +31,7 @@ def current_bot_id() -> str:
         idx = parts.index("workspaces")
         if idx + 1 < len(parts):
             return parts[idx + 1]
-    # claw3 layout: /root/.openclaw/agents/<bot_id>/workspace/...
+    # agent workspace layout: <agent-root>/<bot_id>/workspace/...
     if "agents" in parts:
         idx = parts.index("agents")
         if idx + 1 < len(parts):

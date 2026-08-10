@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from skills.drama.tools import pipeline
 from skills.drama.tools.agent_tools import save_adaptation, save_events, save_skeleton
-from skills.drama.tools.script_workflow import load_draft, save_draft, save_review_report
+from skills.drama.tools.script_workflow import load_draft, mark_episode_passed, save_draft, save_review_report
 from skills.drama.tools.source_io import save_requirements
 from skills.drama.tools.state_manager import StateManager
 
@@ -46,9 +46,27 @@ def seed_artifacts(config):
 
 
 def valid_script(ep: int, line: str = "我不会再退了") -> str:
-    scene = f"{ep}-1　厨房　日　内\n人物：甲、乙\n△甲把账本按在桌上，乙被逼得后退半步。\n甲（冷静/盯着乙）：{line}\n乙（慌张/压低声音）：你别把事情闹大。\n甲（坚定/拿起手机）：现在不是我闹，是你该还账。\n△手机录音亮起，门外传来邻居的脚步声。\n甲（冷笑/转身）：下一秒，我就让所有人听见真相。"
-    # Keep fake drafts long enough to satisfy current minimum-length validator.
-    return "<scriptItem name=\"EP{ep}\">".format(ep=ep) + "\n" + (scene + "\n") * 5 + "</scriptItem>"
+    beats = "\n".join(
+        [
+            "人物：甲、乙",
+            "△甲把账本按在桌上，乙被逼得后退半步。",
+            f"甲（冷静/盯着乙）：{line}",
+            "乙（慌张/压低声音）：你别把事情闹大。",
+            "甲（坚定/拿起手机）：现在不是我闹，是你该还账。",
+            "△手机录音亮起，门外传来邻居的脚步声。",
+            "甲（冷笑/转身）：下一秒，我就让所有人听见真相。",
+        ]
+        * 5
+    )
+    # Keep fake drafts long enough to satisfy current minimum-length validator
+    # without creating repeated adjacent scene headings that violate scene-key gates.
+    return (
+        f'<scriptItem name="EP{ep}">\n'
+        f"EP{ep:03d}：测试集\n"
+        f"{ep}-1　厨房　日　内\n"
+        f"{beats}\n"
+        "</scriptItem>"
+    )
 
 
 class PipelineScriptWorkflowTests(unittest.TestCase):
@@ -83,9 +101,9 @@ class PipelineScriptWorkflowTests(unittest.TestCase):
             state.load()
             blocked = {"verdict": "blocked", "summary": "bad", "severe_issues": ["缺少钩子"], "non_blocking_issues": []}
             responses = [
-                '<scriptItem name="EP1">坏稿</scriptItem>',
+                valid_script(1, "第一版我还没有把钩子补出来"),
                 json.dumps(blocked, ensure_ascii=False),
-                '<scriptItem name="EP1">改稿</scriptItem>',
+                valid_script(1, "改稿后我仍然没把钩子补出来"),
                 json.dumps(blocked, ensure_ascii=False),
             ]
 
@@ -103,13 +121,21 @@ class PipelineScriptWorkflowTests(unittest.TestCase):
             state = StateManager(config["output_dir"])
             state.load()
             state.start_script_batch("batch_001", [1])
-            save_draft(config["output_dir"], "batch_001", 1, "confirmed draft")
+            confirmed_draft = valid_script(1, "确认稿里我把证据重新整理好了")
+            save_draft(config["output_dir"], "batch_001", 1, confirmed_draft)
+            save_review_report(config["output_dir"], "batch_001", 1, {
+                "verdict": "pass",
+                "summary": "人工确认前系统审核已通过",
+                "severe_issues": [],
+                "non_blocking_issues": [],
+            })
+            mark_episode_passed(config["output_dir"], "batch_001", 1)
             state.mark_batch_waiting_confirmation("summary.md")
 
             ok = pipeline.phase_confirm_draft_batch(config, state)
 
             self.assertTrue(ok)
-            self.assertEqual((Path(config["output_dir"]) / "scripts" / "ep_001.txt").read_text(encoding="utf-8"), "confirmed draft")
+            self.assertEqual((Path(config["output_dir"]) / "scripts" / "ep_001.txt").read_text(encoding="utf-8"), confirmed_draft)
             self.assertIsNone(state.get_pending_script_batch())
 
     def test_script_phase_reuses_existing_current_draft_without_overwriting(self):
@@ -144,7 +170,8 @@ class PipelineScriptWorkflowTests(unittest.TestCase):
             state = StateManager(config["output_dir"])
             state.load()
             state.start_script_batch("batch_001", [1, 2])
-            save_draft(config["output_dir"], "batch_001", 1, "keep EP1")
+            keep_ep1 = valid_script(1, "第一集已经确认不要被覆盖")
+            save_draft(config["output_dir"], "batch_001", 1, keep_ep1)
             bad_ep2 = valid_script(2, "坏稿但格式仍然合格")
             fixed_ep2 = valid_script(2, "改好后我把最后的钩子补强了")
             save_draft(config["output_dir"], "batch_001", 2, bad_ep2)
@@ -165,7 +192,7 @@ class PipelineScriptWorkflowTests(unittest.TestCase):
                 ok = pipeline.phase_rewrite_draft(config, state, 2)
 
             self.assertTrue(ok)
-            self.assertEqual(load_draft(config["output_dir"], "batch_001", 1), "keep EP1")
+            self.assertEqual(load_draft(config["output_dir"], "batch_001", 1), keep_ep1)
             self.assertEqual(load_draft(config["output_dir"], "batch_001", 2), fixed_ep2)
             archived = Path(config["output_dir"]) / "drafts" / "batch_001" / "rewrites" / "ep_002_attempt_01.txt"
             self.assertEqual(archived.read_text(encoding="utf-8"), bad_ep2)

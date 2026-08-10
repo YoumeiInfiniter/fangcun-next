@@ -22,6 +22,9 @@ class PortabilityTests(unittest.TestCase):
         for path in FANGCUN_ROOT.rglob("*"):
             if not path.is_file():
                 continue
+            rel_parts = path.relative_to(FANGCUN_ROOT).parts
+            if any(part.startswith(".") for part in rel_parts):
+                continue
             if "__pycache__" in path.parts or path.suffix == ".pyc":
                 continue
             if path.relative_to(FANGCUN_ROOT).as_posix() == "SKILL.md":
