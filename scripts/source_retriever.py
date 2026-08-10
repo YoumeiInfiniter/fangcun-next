@@ -504,36 +504,38 @@ def _retrieve(
         quote = item.get("quote")
         source_event_id = item.get("source_event_id")
         event = events_by_id.get(source_event_id)
-        candidate_chapters = [event.get("chapter_id")] if event else list(chapter_ids)
         found = False
-        for ch_id in candidate_chapters:
+        event_span = (event or {}).get("source_span") or {}
+        ch_id = (event or {}).get("chapter_id")
+        if (
+            isinstance(ch_id, int)
+            and isinstance(event_span.get("start"), int)
+            and isinstance(event_span.get("end"), int)
+            and 0 <= event_span["start"] < event_span["end"]
+        ):
             chapter_text = chapters.get(ch_id)
-            if not chapter_text:
-                continue
-            if setup and payoff:
-                s1 = chapter_text.find(setup)
-                s2 = chapter_text.find(payoff)
-                if s1 < 0 or s2 < 0:
-                    continue
-                span = _snap_span(chapter_text, min(s1, s2), max(s1 + len(setup), s2 + len(payoff)))
-                found = True
-            elif quote:
-                pos = chapter_text.find(quote)
-                if pos < 0:
-                    continue
-                span = _snap_span(chapter_text, pos, pos + len(quote))
-                found = True
-            else:
-                continue
-            meta = chapter_meta.get(ch_id, {})
-            chapter_dict = {
-                "chapter_index": ch_id,
-                "title": meta.get("title", ""),
-                "file": meta.get("file", ""),
-                "content_hash": meta.get("content_hash", ""),
-            }
-            excerpts.append(_make_excerpt(chapter_text, chapter_dict, span[0], span[1], f"required_quote:{idx:03d}"))
-            break
+            event_start = event_span["start"]
+            event_end = min(event_span["end"], len(chapter_text or ""))
+            if chapter_text and event_start < event_end and setup and payoff:
+                s1 = chapter_text.find(setup, event_start, event_end)
+                s2 = chapter_text.find(payoff, event_start, event_end)
+                if s1 >= 0 and s2 >= 0:
+                    span = _snap_span(chapter_text, min(s1, s2), max(s1 + len(setup), s2 + len(payoff)))
+                    found = True
+            elif chapter_text and event_start < event_end and quote:
+                pos = chapter_text.find(quote, event_start, event_end)
+                if pos >= 0:
+                    span = _snap_span(chapter_text, pos, pos + len(quote))
+                    found = True
+            if found:
+                meta = chapter_meta.get(ch_id, {})
+                chapter_dict = {
+                    "chapter_index": ch_id,
+                    "title": meta.get("title", ""),
+                    "file": meta.get("file", ""),
+                    "content_hash": meta.get("content_hash", ""),
+                }
+                excerpts.append(_make_excerpt(chapter_text, chapter_dict, span[0], span[1], f"required_quote:{idx:03d}"))
         if not found:
             anchor_fail_reasons[f"required_quote_{idx}"] = "quote_not_in_source_event"
 

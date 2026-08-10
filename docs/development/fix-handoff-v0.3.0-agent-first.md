@@ -1,7 +1,10 @@
-# Fangcun Next 0.3.0（Agent-first）开发交接
+# Fangcun Next 0.3.1（Agent-first）开发交接
 
 > 文档性质：开发实施模型的开发自测交接，不等同于独立验收。
 > 独立评审模型应从干净工作区复现本文件列出的测试，再运行未公开变体。
+
+0.3.1 补丁修复：`required_quote` 现在必须在其绑定 `source_event_id` 的精确
+`source_span` 内命中；同章其他事件中的同名台词不能再满足该锚点。
 
 ## 起点与提交
 
@@ -29,7 +32,7 @@
 | 草稿确定性时长指标 | `scripts/duration_estimator.py`、`references/schemas/draft-metrics.schema.json`、`scripts/project_cli.py` | `test_draft_metrics_bound_and_deviation_above`、`test_low_density_long_draft_metrics_and_system_timing_advisory` |
 | 可拍性闭环与严重度 | `references/prompts/writer.md`、`references/prompts/reviewer.md`、`references/review-rubric.md` | `test_shootability_severity_prompt_and_error_save` |
 | 项目规则隔离 | `references/schemas/project-config.schema.json`、`scripts/prompt_router.py` | `test_project_rules_isolated_to_referencing_project` |
-| 发布版本 0.3.0 | `pyproject.toml`、`scripts/__init__.py`、`scripts/release_builder.py` | `test_release_builder` |
+| 发布版本 0.3.1 | `pyproject.toml`、`scripts/__init__.py`、`scripts/release_builder.py` | `test_release_builder` |
 
 ## 测试结果（开发自测，均未调用真实模型/API）
 
@@ -40,7 +43,7 @@
 # Ran 119 tests, OK
 
 .venv/bin/python -m unittest discover -s tests/regression -p 'test_*.py'
-# Ran 163 tests, OK（新增 8 个 0.3.0 公开案例）
+# Ran 165 tests, OK（包含 required_quote 错绑拒绝与正确绑定保留两项补丁回归）
 
 .venv/bin/python -m unittest discover -s tests/smoke -p 'test_*.py'
 # Ran 4 tests, OK
@@ -109,15 +112,15 @@
 
 ## 发布包
 
-- 路径：`dist/fangcun-next-0.3.0.zip`
-- SHA256：`b68d055d9c6fe385652f3a3b045f6b7696696211065afe3bb397af47a05f49a3`
-- 清单：`dist/release_manifest.json`（74 个文件，版本 0.3.0）
+- 路径：`dist/fangcun-next-0.3.1.zip`
+- SHA256：`1384016c8ae230994a9df51c3da6dfdf624e7b821df4c8e59dce3709480efd86`
+- 清单：`dist/release_manifest.json`（74 个文件，版本 0.3.1）
 - 发布包不包含 `docs/development/`、`docs/research/`、测试项目、小说原文、密钥或本地配置。
 
 ## 给独立评审模型的简短只读复审提示词
 
 ```text
-你是 Fangcun Next 0.3.0 独立评审模型，只读复审。
+你是 Fangcun Next 0.3.1 独立评审模型，只读复审。
 从干净工作区 checkout codex/fangcun-next-v0.3.0-agent-first 的最终 HEAD，
 不修改代码、不合并 main、不调用真实 API、不执行平台写入。
 请复现 docs/development/fix-handoff-v0.3.0-agent-first.md 中的 unit/regression/smoke，

@@ -590,6 +590,51 @@ class V030AgentFirstTests(unittest.TestCase):
         marked = mark_legacy_must_keep({"episode": 2, "must_keep": ["旧条目"]})
         self.assertEqual(marked["must_keep"][0]["legacy_classification"], "legacy_unspecified")
 
+    def test_required_quote_rejects_same_chapter_text_outside_bound_event_span(self):
+        self._setup_two_events()
+        outline = base_outline(
+            required_quotes=[
+                {"quote": "事件二开始。", "source_event_id": "CH001-E01"}
+            ]
+        )
+        path = self.root / "wrong-event-quote.json"
+        path.write_text(json.dumps({"episodes": [outline]}, ensure_ascii=False), encoding="utf-8")
+        output = run_cli(
+            "save-episode-outline",
+            "--dir",
+            str(self.project),
+            "--outline-json",
+            str(path),
+            "--manual-import",
+            "--manual-reason",
+            "required quote wrong-event regression",
+            expect=1,
+        )
+        self.assertIn("required_quote", output)
+        self.assertIn("quote_not_in_source_event", output)
+
+    def test_required_quote_accepts_text_inside_bound_event_span(self):
+        self._setup_two_events()
+        outline = base_outline(
+            required_quotes=[
+                {"quote": "事件一开始。", "source_event_id": "CH001-E01"}
+            ]
+        )
+        self._save_outline(outline)
+        run_cli("get-episode-context", "--dir", str(self.project), "--episode", "1")
+        pointer = json.loads(
+            (self.project / "state" / "episode_contexts" / "current_EP001.json").read_text(encoding="utf-8")
+        )
+        context = json.loads(
+            (self.project / "state" / "episode_contexts" / pointer["path"]).read_text(encoding="utf-8")
+        )
+        coverage = [
+            item for item in context["source_evidence"]["coverage"]
+            if item.get("anchor_type") == "required_quote"
+        ]
+        self.assertEqual(1, len(coverage))
+        self.assertFalse(coverage[0]["omitted"])
+
 
 if __name__ == "__main__":
     unittest.main()
