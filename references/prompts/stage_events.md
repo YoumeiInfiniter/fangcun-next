@@ -22,7 +22,9 @@
 - **半自动定位**：把要定位的原文片段（事件核心文本或关键原句）交给本地命令自动算坐标，不要手工数：
   `fangcun locate-span --dir <项目目录> --chapter <章号> --text "<原文片段>" [--fuzzy]`
   - `--text` 必须是**章节原文里逐字存在的片段**（事件动作/结果的原文叙述或 key_quote 原句）；若是自己归纳的摘要词，locate-span 会返回 `not_found`，此时按下面 needs_reanchor 处理；
-  - 原文片段重复出现时用 `--occurrence N` 选第几次；跨行/全角空格差异用 `--fuzzy`；
+  - 原文片段重复出现且未指定次数时，locate-span 会返回 `ambiguous_occurrence`（needs_reanchor），
+    必须用 `--occurrence N` 指定第几次，或提供更长/更独特的原文片段，禁止静默选第一个位置；
+    跨行/全角空格差异用 `--fuzzy`；
   - 用返回的 `span.start/span.end` 填 `source_span`，用返回的 `source_quote` 填 `source_quote`，`coordinate_base: chapter_file_content`；
 - 标题只取 index metadata，不自行向章节正文前追加标题或换行；
 - 有 span 时同时输出 `coordinate_base: chapter_file_content` 和位于 span 内的 `source_quote`；

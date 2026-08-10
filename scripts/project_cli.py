@@ -2127,7 +2127,12 @@ def cmd_confirm_stages(args) -> int:
 
 
 def cmd_locate_span(args) -> int:
-    """P1/P2：事件提取半自动 span 定位（本地确定性，无 API）。"""
+    """P1/P2：事件提取半自动 span 定位（本地确定性，无 API）。
+
+    0.3.3：未显式传 --occurrence 时启用歧义保护（unique_required=True）——
+    原文片段重复出现返回 ambiguous_occurrence/needs_reanchor，不静默选第一个位置，
+    避免事件锚定到错误坐标造成上游 v002 重绑返工。
+    """
     project_dir = _project_dir(args)
     from .source_ingest import read_chapter
     from .span_locator import locate_span
@@ -2136,16 +2141,20 @@ def cmd_locate_span(args) -> int:
     if chapter_result is None:
         raise CliError(f"章节 {args.chapter} 不存在（章节号从 1 开始）")
     chapter_text, chapter_meta = chapter_result
+    explicit_occurrence = args.occurrence is not None
     result = locate_span(
         chapter_text,
         args.text,
-        occurrence=args.occurrence,
+        occurrence=args.occurrence if explicit_occurrence else 1,
         fuzzy=args.fuzzy,
+        unique_required=not explicit_occurrence,
     )
     if result.get("found"):
         result["chapter_id"] = args.chapter
         result["chapter_content_hash"] = chapter_meta.get("content_hash")
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    if not result.get("found") and result.get("reason") == "ambiguous_occurrence":
+        print(result.get("message", ""), file=sys.stderr)
     return 0
 
 
@@ -2348,7 +2357,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dir", required=True)
     p.add_argument("--chapter", type=int, required=True, help="章节号（从 1 开始）")
     p.add_argument("--text", required=True, help="原文片段（事件核心文本）")
-    p.add_argument("--occurrence", type=int, default=1, help="第几次出现，默认 1")
+    p.add_argument("--occurrence", type=int, default=None,
+                  help="第几次出现；不传时自动定位，若原文片段重复出现会提示歧义并要求指定")
     p.add_argument("--fuzzy", action="store_true", help="弱匹配：仅容忍空白差异")
     p.set_defaults(func=cmd_locate_span)
 

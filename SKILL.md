@@ -54,7 +54,7 @@ description: |
 | 初始化项目 | `fangcun init --dir <project> --config <config.json>` |
 | 发来原始需求 | `init --brief "..."` 后 `generate-requirements` → `save-requirements` |
 | 发来小说文件 | `ingest-source --dir <project> --file <novel.txt>` |
-| 提取事件 | 读取 `source/index.json` 及其章节文件，按 `references/prompts/stage_events.md` 生成 JSON；定位原文片段坐标用 `locate-span --dir <project> --chapter <N> --text "<原文片段>" [--fuzzy]` 半自动计算（禁止手工数坐标），再执行 `save-events --dir <project> --file <events.json>` |
+| 提取事件 | 读取 `source/index.json` 及其章节文件，按 `references/prompts/stage_events.md` 生成 JSON；定位原文片段坐标用 `locate-span --dir <project> --chapter <N> --text "<原文片段>" [--fuzzy]` 半自动计算（禁止手工数坐标；片段重复出现时须用 `--occurrence N` 指定第几次，工具不会静默选错位置），再执行 `save-events --dir <project> --file <events.json>` |
 | 编剧一次性确认多个阶段产物（上游重绑批量确认） | 在编剧明确确认后，`confirm-stages --stages adaptation,story_outline,episode_outline --operator <实际确认人> --confirmation-ref <消息或评论引用> [--override-reason ...]`；已确认且内容 hash 未变的阶段会自动沿用旧确认并跳过 |
 | 容量预估 | `estimate-capacity --dir <project>` |
 | 改编指引 | `generate-adaptation`（记录输出的 `stage_context_hash`）→ `save-adaptation --file <strategy.md> --stage-context-hash <hash>` |

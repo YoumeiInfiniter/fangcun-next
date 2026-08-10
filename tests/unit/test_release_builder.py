@@ -22,15 +22,15 @@ class ReleaseBuilderTests(unittest.TestCase):
         with zipfile.ZipFile(zip_path) as zf:
             names = zf.namelist()
         joined = "\n".join(names)
-        self.assertIn("fangcun-next-0.3.2/SKILL.md", joined)
-        self.assertIn("fangcun-next-0.3.2/scripts/project_cli.py", joined)
-        self.assertIn("fangcun-next-0.3.2/references/schemas/project-config.schema.json", joined)
+        self.assertIn("fangcun-next-0.3.3/SKILL.md", joined)
+        self.assertIn("fangcun-next-0.3.3/scripts/project_cli.py", joined)
+        self.assertIn("fangcun-next-0.3.3/references/schemas/project-config.schema.json", joined)
         for excluded in ("tests/", "skills/", "docs/", "tools/", "hooks/", "memory/", "projects/"):
             self.assertNotIn(excluded, joined)
         manifest = self.out.parent / "release_manifest.json"
         self.assertTrue(manifest.exists())
         data = __import__("json").loads(manifest.read_text(encoding="utf-8"))
-        self.assertEqual(data["version"], "0.3.2")
+        self.assertEqual(data["version"], "0.3.3")
 
     def test_check_private_isolation_flags_secrets(self):
         with tempfile.TemporaryDirectory() as tmp:
