@@ -2,7 +2,7 @@
 
 ## 1. 当前状态
 
-本仓库已经完成 Fangcun Next 的独立核心重构。新版运行入口是根目录 `SKILL.md`、`scripts/`、`references/`；`skills/`、`agents/`、`tools/` 与 `docs/legacy/` 仅是旧版迁移基线，不进入默认发布包。
+本仓库已经完成 Fangcun Next 的独立核心重构。新版运行入口是根目录 `SKILL.md`、`scripts/`、`references/`、`assets/` 与 `agents/openai.yaml`；旧版运行体系已迁出到只读归档目录（见 `docs/development/release-notes-v0.3.2.md`），不进入默认发布包。
 
 当前处于本地技术验收与小规模质量测试阶段：
 
@@ -53,9 +53,9 @@ docs/specs/fangcun-next-design-spec.md，将规格书视为新版产品与架构
 2. `docs/specs/fangcun-next-design-spec.md`；
 3. `AGENTS.md`；
 4. 已通过的新版自动化测试和数据 Schema；
-5. 旧版代码与旧版 `SKILL.md`；
+5. 旧版归档（只读）与旧版 `SKILL.md`（Git 历史）；
 6. `docs/research/` 中的调研证据；
-7. `docs/legacy/` 中的历史说明。
+7. 旧版运行体系的历史说明（已归档，按需经 Git 历史追溯）。
 
 不能静默解决规格书内部的真实业务冲突。发现冲突时，应给出文件位置、两种解释及影响，并请求业务方决定。
 
@@ -69,33 +69,18 @@ docs/specs/fangcun-next-design-spec.md，将规格书视为新版产品与架构
 
 研究材料按需读取，不需要在每次任务中全量注入。
 
-## 6. 旧版测试基线
+## 6. 测试基线
 
-验证日期：2026-08-09。
-
-验证环境：Python 3.12，本地 `.venv`，安装 `requirements.txt`；未调用真实模型 API，未执行飞书操作。
-
-执行命令：
+当前测试基线（2026-08-10 独立验收复现）：
 
 ```bash
-PYTHONPATH="$PWD/skills/drama/tools" .venv/bin/python -m compileall -q skills tools tests
-PYTHONPATH="$PWD/skills/drama/tools" .venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
+PYTHONPATH="$PWD" .venv/bin/python -m unittest discover -s tests/unit -p 'test_*.py'
+PYTHONPATH="$PWD" .venv/bin/python -m unittest discover -s tests/regression -p 'test_*.py'
+PYTHONPATH="$PWD" .venv/bin/python -m unittest discover -s tests/smoke -p 'test_*.py'
 ```
 
-结果：
+- unit 129 / regression 165 / smoke 4 全绿；隐藏变体 43/43 通过（时长容差、确认继承与批量确认、locate-span 边界）；
+- 旧版 38 项测试基线随旧运行时一并迁出归档，由 Git 历史追溯；
+- 发布包构建：`build-package --out dist/fangcun-next-0.3.2.zip`。
 
-- Python 编译通过；
-- 共运行 38 项测试；
-- 31 项通过；
-- 4 项失败；
-- 3 项报错。
-
-既有失败主要分为：
-
-1. 测试剧本样本重复使用同一场次编号和 scene key，被当前场次门禁拦截；
-2. 剧本生成测试样本缺少当前 Validator 要求的规范分集标识；
-3. 可移植性测试会把旧代码注释中的 OpenClaw 示例路径判为违规；
-4. 旧 Prompt 测试期待一句已经不存在的 Toonflow 确认文案；
-5. 一项审核阻断测试读取不到预期的 `episode_reviews["1"]` 状态。
-
-这些问题存在于复制进来的旧版基线中。本次仓库初始化不修复业务代码；开发 Agent 应先把失败分类为“过时测试”“真实缺陷”或“新版将废弃行为”，再根据规格书处理，不能为了全绿简单删除测试。
+既有失败基线不再作为活动仓库测试入口；新增或修改必须保持 unit/regression/smoke 无新增失败。

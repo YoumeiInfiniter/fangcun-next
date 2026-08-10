@@ -8,9 +8,11 @@ description: |
 
 # Fangcun Next：小说转短剧 Skill 系统
 
-本 Skill 是 Fangcun 新版，与旧版 `fangcun-v2-dev` 相互独立。旧版代码保留在
-`docs/legacy/` 与本仓库 `skills/` 目录中，仅作迁移输入与兼容基线；新版唯一
-设计基线是 `docs/specs/fangcun-next-design-spec.md`。
+本 Skill 是 Fangcun 新版，与旧版 `fangcun-v2-dev` 相互独立；旧版运行体系与
+旧文档已迁出到只读归档（Git 历史可追溯），不参与本 Skill 运行。设计基线见
+源码仓库 `docs/specs/fangcun-next-design-spec.md`（开发用，发布包不含 `docs/`）。
+发布包只包含本 SKILL.md、`agents/openai.yaml`、`scripts/`、`references/`、`assets/`
+与 `pyproject.toml`，运行所需规则全部位于包内。
 
 ## 一句话定位
 

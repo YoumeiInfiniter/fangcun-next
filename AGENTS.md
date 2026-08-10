@@ -13,7 +13,7 @@
 - 当前开发任务的范围、外部验收案例和完成定义，由启动提示词指定的 `docs/development/independent-review-roundN-fix-brief.md` 约束；
 - 旧代码是迁移输入，不是新版需求来源；
 - `docs/research/` 是问题证据，不是全题材统一写法；
-- `docs/legacy/` 只用于兼容、溯源和迁移；
+- 旧版运行体系（`skills/`、`tools/`、旧 `agents/*.md`、`tests/drama/`、`docs/legacy|superpowers`）已迁出到只读归档，仅通过归档目录或 Git 历史溯源；迁移兼容层保留在 `scripts/migration.py`、legacy-scriptitem 适配与 `legacy_unspecified` 字段中；
 - 用户在当前任务中的明确决定高于仓库文档。
 
 修改前必须完整读取与当前任务相关的规范章节。涉及整体架构、数据契约或优先级时，应完整阅读规格书。
