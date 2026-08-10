@@ -60,8 +60,13 @@ class DurationEstimatorTests(unittest.TestCase):
         self.assertIn("第1集", report)
 
     def test_draft_metrics_bound_and_deviation_above(self):
+        # 长台词脚本：estimated 明显高于窗口上界 + ±10s 容差，稳定触发 above
+        long_lines = "\n".join(
+            f"A：这是很长很长很长很长很长的台词{idx}。" for idx in range(8)
+        )
+        long_script = f"第1集：测试\n\n1-1 家 夜 内\n人物：A\n\n△A进门。\n{long_lines}\n"
         metrics = compute_draft_metrics(
-            SCRIPT,
+            long_script,
             episode=1,
             context_hash="c" * 64,
             draft_version="v001",
@@ -73,6 +78,21 @@ class DurationEstimatorTests(unittest.TestCase):
         self.assertEqual(metrics["deviation"], "above")
         self.assertFalse(metrics["blocking"])
         self.assertEqual(metrics["source"], "system")
+
+    def test_deviation_within_tolerance_band(self):
+        # P0 语义：±10 秒容差内不得报偏差（如 152s vs 目标 150s 可接受）。
+        # 原 SCRIPT 估计约 9s，对 [1,2] 窗口：9 < 2+10，因此为 within 而非 above。
+        metrics = compute_draft_metrics(
+            SCRIPT,
+            episode=1,
+            context_hash="c" * 64,
+            draft_version="v001",
+            draft_hash="d" * 64,
+            preferred_seconds=[1, 2],
+        )
+        self.assertEqual(metrics["deviation"], "within")
+        self.assertEqual(metrics["tolerance_seconds"], 10.0)
+        self.assertFalse(metrics["blocking"])
 
 
 if __name__ == "__main__":
