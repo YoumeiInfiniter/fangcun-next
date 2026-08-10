@@ -14,7 +14,9 @@
   - `ab9d936` feat: bind draft metrics to drafts, enforce system timing advisory and honest experimental API failures
   - `ba8b1b3` test: add v0.3.0 agent-first acceptance and API/metrics regression cases
   - `c2470ac` docs: hand off Fangcun Next 0.3.0 agent-first development
-- 最终 HEAD：`c2470ac`（本文件随后只做最终 HEAD 记录提交，工作树干净）。
+  - `18fcd9e` docs: record final v0.3.0 handoff HEAD
+- 最终 HEAD：以本分支 `git rev-parse HEAD` 为准（交接提交后工作树干净；最终交付时
+  的 HEAD 见开发模型最终回复）。
 
 ## 需求到修改文件和测试的映射
 
