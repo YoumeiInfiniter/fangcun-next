@@ -170,6 +170,16 @@ def _project_section(config: dict, outline: dict | None = None) -> str:
         lines.append("- 编剧禁止改动：" + "；".join(brief["forbidden_changes"]))
     if outline:
         lines.append(f"- 本集建议时长：{outline.get('suggested_seconds') or '未定'}（仅预期）")
+    project_rules = config.get("project_specific_requirements", []) or []
+    rule_refs = (outline or {}).get("project_rule_refs", []) or []
+    selected_rules = [
+        item for item in project_rules
+        if isinstance(item, dict) and item.get("id") in rule_refs
+    ]
+    if selected_rules:
+        lines.extend(["", "当前项目已引用规则（只加载本集引用项）："])
+        for item in selected_rules:
+            lines.append(f"- {item.get('id')}：{item.get('text', '')}")
     return "\n".join(lines)
 
 
@@ -224,6 +234,35 @@ def _continuity_section(context: dict) -> str:
     return "\n".join(parts)
 
 
+def _advisory_section(context: dict) -> str:
+    from .common import canonical_json
+
+    advisory = context.get("advisory_timing", {}) or {}
+    parts = [
+        "## 容量与时长提示（advisory_only，不阻断）",
+        f"最低时长：{advisory.get('minimum_seconds')} 秒；建议时长：{advisory.get('preferred_seconds') or advisory.get('outline_suggested_seconds') or '未定'} 秒",
+    ]
+    density = advisory.get("density_report") or {}
+    if density:
+        parts.append(
+            f"本集容量压力：{density.get('pressure')}"
+            f"（事件最低 {density.get('minimum_event_seconds')} 秒，"
+            f"偏好 {density.get('preferred_event_seconds')} 秒，置信度 {density.get('confidence')}）"
+        )
+        if density.get("binding"):
+            parts.append(
+                "容量绑定：集纲 "
+                f"{density.get('binding', {}).get('outline_version')} / "
+                f"{str(density.get('binding', {}).get('outline_hash') or '')[:12]}"
+            )
+    if context.get("draft_metrics"):
+        parts.append(
+            "草稿确定性时长指标（系统计算，Reviewer 不得猜测或覆盖）：\n"
+            + canonical_json(context["draft_metrics"])
+        )
+    return "\n".join(parts)
+
+
 def assemble_prompt_layers(
     context: dict,
     *,
@@ -240,6 +279,7 @@ def assemble_prompt_layers(
         "contract": _contract_section(outline),
         "evidence": _evidence_section(context.get("source_evidence", {})),
         "continuity": _continuity_section(context),
+        "advisory": _advisory_section(context),
     }
     craft_parts = []
     for module in context.get("selected_craft_modules", []) or []:
@@ -283,6 +323,7 @@ def render_prompt_bundle(
             layers["contract"],
             layers["evidence"],
             layers["continuity"],
+            layers["advisory"],
             layers["craft"],
             layers["review"],
         ]

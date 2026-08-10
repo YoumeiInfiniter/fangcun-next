@@ -10,7 +10,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .common import atomic_write_json, canonical_json, ensure_dir, now_iso, stable_hash
+from .common import (
+    atomic_write_json,
+    canonical_json,
+    ensure_dir,
+    jsonl_append,
+    now_iso,
+    read_jsonl,
+    stable_hash,
+)
 from .state_store import (
     commit_artifact,
     load_config,
@@ -233,6 +241,7 @@ def confirm_stage(
     operator: str,
     confirmation_ref: str,
     review_override_reason: str | None = None,
+    capacity_decision: str | None = None,
 ) -> dict:
     if stage not in STAGE_KINDS:
         raise ValueError(f"未知阶段：{stage}")
@@ -260,7 +269,28 @@ def confirm_stage(
         )
     if not review_ok and not str(review_override_reason or "").strip():
         raise ValueError("缺少与当前版本同源绑定且通过的阶段审核；如人工完整审核，请提供 override reason")
-    return update_artifact_status(
+    capacity_payload = None
+    if stage == "episode_outline":
+        meta = record.get("meta") or {}
+        reports = meta.get("density_reports", []) or []
+        aggregate = aggregate_density_reports(reports)
+        decision = str(capacity_decision or "").strip()
+        if aggregate["high_episodes"] or aggregate["medium_episodes"]:
+            if decision not in ("accept_current_plan", "changes_recorded"):
+                raise ValueError(
+                    "集纲存在 medium/high 容量风险，编剧必须一次性确认或记录调整。\n"
+                    + aggregate["summary"]
+                    + "\n请使用 --capacity-decision accept_current_plan（接受当前规划）"
+                    "或 changes_recorded（已记录调整后重新保存集纲）。"
+                )
+        else:
+            decision = "not_applicable"
+        capacity_payload = {
+            "aggregate": aggregate,
+            "decision": decision,
+            "outline_hash": record.get("content_hash", ""),
+        }
+    result = update_artifact_status(
         project_dir,
         kind,
         version,
@@ -271,6 +301,18 @@ def confirm_stage(
             + f"; confirmation_ref={confirmation_ref.strip()}"
         ),
     )
+    if stage == "episode_outline":
+        decision_record = record_capacity_decision(
+            project_dir,
+            outline_version=version,
+            outline_hash=capacity_payload["outline_hash"],
+            decision=capacity_payload["decision"],
+            operator=operator,
+            confirmation_ref=confirmation_ref,
+            aggregate=capacity_payload["aggregate"],
+        )
+        result["capacity_decision"] = decision_record
+    return result
 
 
 def compact_event_catalog(events: list[dict], *, text_limit: int = 96) -> list[dict]:
@@ -295,12 +337,37 @@ def compact_event_catalog(events: list[dict], *, text_limit: int = 96) -> list[d
     return result
 
 
-def episode_density_report(outline: dict, events_by_id: dict[str, dict]) -> dict:
-    selected = [events_by_id[eid] for eid in outline.get("source_event_ids", []) or [] if eid in events_by_id]
+def episode_density_report(
+    outline: dict,
+    events_by_id: dict[str, dict],
+    *,
+    outline_version: str | None = None,
+    outline_hash: str | None = None,
+) -> dict:
+    event_ids: list[str] = []
+    for eid in outline.get("source_event_ids", []) or []:
+        if eid not in event_ids:
+            event_ids.append(eid)
+    for beat in outline.get("required_story_beats", []) or []:
+        for eid in beat.get("event_ids", []) or []:
+            if eid not in event_ids:
+                event_ids.append(eid)
+    for beat in outline.get("beat_plan", []) or []:
+        for eid in beat.get("event_ids", []) or []:
+            if eid not in event_ids:
+                event_ids.append(eid)
+    selected = [events_by_id[eid] for eid in event_ids if eid in events_by_id]
     minimum = sum(int(e.get("minimum_screen_seconds") or 0) for e in selected)
     preferred = sum(int(e.get("preferred_screen_seconds") or e.get("minimum_screen_seconds") or 0) for e in selected)
     suggested = outline.get("suggested_seconds") or []
     upper = max(suggested) if isinstance(suggested, list) and suggested else None
+    missing_seconds = [
+        eid
+        for eid in event_ids
+        if eid not in events_by_id
+        or events_by_id[eid].get("minimum_screen_seconds") is None
+        or events_by_id[eid].get("preferred_screen_seconds") is None
+    ]
     if upper is not None and minimum > upper:
         pressure = "high"
     elif upper is not None and preferred > upper:
@@ -308,11 +375,98 @@ def episode_density_report(outline: dict, events_by_id: dict[str, dict]) -> dict
     else:
         pressure = "low"
     return {
-        "event_ids": [e.get("event_id") for e in selected],
+        "event_ids": event_ids,
         "minimum_event_seconds": minimum,
         "preferred_event_seconds": preferred,
         "suggested_seconds": suggested,
         "pressure": pressure,
+        "confidence": "low" if missing_seconds else "high",
+        "calculation_basis": [
+            "事件最低/理想时长来自 source_events（缺失时不计入并降低置信度）",
+            "对比本集 suggested_seconds 上限判断压力等级",
+            "只用于编剧决策，不是创作硬门禁",
+        ],
+        "binding": {
+            "outline_version": outline_version,
+            "outline_hash": outline_hash,
+        },
         "advisory_only": True,
         "note": "容量仅供编剧判断；剧本阶段可按实际创作调整，不自动回滚上游。",
     }
+
+
+def aggregate_density_reports(reports: list[dict]) -> dict:
+    """One-shot aggregate for writer-facing risk summaries (not all details)."""
+    reports = reports or []
+    high = [int(r.get("episode")) for r in reports if r.get("pressure") == "high"]
+    medium = [int(r.get("episode")) for r in reports if r.get("pressure") == "medium"]
+    low = [int(r.get("episode")) for r in reports if r.get("pressure") == "low"]
+    parts = []
+    if high:
+        parts.append(f"high {len(high)} 集（EP{','.join(str(x) for x in high)}）")
+    if medium:
+        parts.append(f"medium {len(medium)} 集（EP{','.join(str(x) for x in medium)}）")
+    if not parts:
+        parts.append("无 medium/high 风险集")
+    return {
+        "high_episodes": high,
+        "medium_episodes": medium,
+        "low_count": len(low),
+        "summary": "集纲容量风险：" + "，".join(parts) + "；仅提示，编剧可一次接受或要求调整。",
+        "advisory_only": True,
+    }
+
+
+def render_density_summary(report: dict) -> str:
+    report = report or {}
+    suggested = report.get("suggested_seconds") or "未定"
+    return (
+        f"本集容量压力：{report.get('pressure')}（事件最低 {report.get('minimum_event_seconds')} 秒，"
+        f"偏好 {report.get('preferred_event_seconds')} 秒，建议 {suggested}；仅提示，不阻断）"
+    )
+
+
+def capacity_decisions_path(project_dir: Path) -> Path:
+    return project_dir / "state" / "capacity_decisions.jsonl"
+
+
+def record_capacity_decision(
+    project_dir: Path,
+    *,
+    outline_version: str,
+    outline_hash: str,
+    decision: str,
+    operator: str,
+    confirmation_ref: str,
+    aggregate: dict,
+) -> dict:
+    allowed = {"accept_current_plan", "changes_recorded", "not_applicable"}
+    if decision not in allowed:
+        raise ValueError(f"非法集纲容量决定：{decision}")
+    record = {
+        "outline_version": outline_version,
+        "outline_hash": outline_hash,
+        "decision": decision,
+        "operator": operator,
+        "confirmation_ref": confirmation_ref,
+        "aggregate_summary": aggregate.get("summary"),
+        "created_at": now_iso(),
+    }
+    jsonl_append(capacity_decisions_path(project_dir), record)
+    return record
+
+
+def capacity_decision_for(
+    project_dir: Path,
+    *,
+    outline_version: str,
+    outline_hash: str,
+) -> dict | None:
+    records = read_jsonl(capacity_decisions_path(project_dir))
+    for record in reversed(records):
+        if (
+            record.get("outline_version") == outline_version
+            and record.get("outline_hash") == outline_hash
+        ):
+            return record
+    return None

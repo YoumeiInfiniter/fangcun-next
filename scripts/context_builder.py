@@ -22,6 +22,7 @@ from .state_store import (
     writer_overrides,
 )
 from .prompt_router import select_craft_modules
+from .stage_lifecycle import episode_density_report
 
 
 class ContextIncompleteError(ValueError):
@@ -96,12 +97,13 @@ def _applicable_overrides(project_dir: Path, episode: int) -> list[dict]:
     return applicable
 
 
-def _must_keep_problems_from_coverage(evidence: dict) -> list[str]:
-    """must_keep traceability comes from the retrieval coverage ledger."""
+def _contract_problems_from_coverage(evidence: dict) -> list[str]:
+    """must_keep / required_story_beats / required_quotes traceability."""
+    anchor_types = {"must_keep", "required_story_beat", "required_quote"}
     return [
         f"must_keep「{item.get('anchor_id')}」未找到原文依据或改编依据"
         for item in evidence.get("coverage", []) or []
-        if item.get("anchor_type") == "must_keep" and item.get("omitted")
+        if item.get("anchor_type") in anchor_types and item.get("omitted")
     ]
 
 
@@ -152,8 +154,11 @@ def build_episode_context(
         outline.get("source_event_ids")
         or outline.get("source_chapters")
         or outline.get("dialogue_anchors")
+        or outline.get("required_story_beats")
+        or outline.get("required_quotes")
+        or outline.get("beat_plan")
     )
-    must_keep_problems = _must_keep_problems_from_coverage(evidence)
+    must_keep_problems = _contract_problems_from_coverage(evidence)
     # A genuinely adaptation-only episode may have no source request, but its
     # must_keep items must still bind to explicit adaptation decision IDs.
     all_problems = (
@@ -177,11 +182,29 @@ def build_episode_context(
 
     overrides = _applicable_overrides(project_dir, episode)
     craft_modules = select_craft_modules(config, outline, craft_operation)
+    from .common import read_json
+
+    events_data = read_json(active_artifact_path(project_dir, "source_events")) if active_artifact_path(project_dir, "source_events") else {}
+    events_list = events_data.get("events", events_data) if isinstance(events_data, dict) else events_data
+    events_by_id = {
+        str(item.get("event_id")): item
+        for item in (events_list or [])
+        if isinstance(item, dict) and item.get("event_id")
+    }
+    density_report = episode_density_report(
+        outline,
+        events_by_id,
+        outline_version=active_version_id(project_dir, "episode_outline"),
+        outline_hash=(
+            (resolve_active(project_dir, "episode_outline") or {}).get("record", {}).get("content_hash")
+        ),
+    )
 
     advisory = {
         "minimum_seconds": config.get("minimum_episode_seconds", 0),
         "preferred_seconds": config.get("preferred_episode_seconds"),
         "outline_suggested_seconds": outline.get("suggested_seconds"),
+        "density_report": density_report,
     }
 
     body = {

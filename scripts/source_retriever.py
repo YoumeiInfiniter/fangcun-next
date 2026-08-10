@@ -142,7 +142,7 @@ def _collect_dependencies(event_id: str, events_by_id: dict[str, dict], seen: se
 
 def _keywords_from(outline: dict, events: list[dict]) -> list[str]:
     keywords: list[str] = []
-    for key in ("title", "episode_goal", "opening_bridge", "ending_hook", "must_keep"):
+    for key in ("title", "episode_goal", "episode_focus", "opening_bridge", "ending_hook", "must_keep"):
         value = outline.get(key)
         if isinstance(value, str):
             for chunk in re.split(r"[，。；、\s]+", value):
@@ -150,10 +150,31 @@ def _keywords_from(outline: dict, events: list[dict]) -> list[str]:
                     keywords.append(chunk)
         elif isinstance(value, list):
             for item in value:
-                if isinstance(item, str):
-                    for chunk in re.split(r"[，。；、\s]+", item):
+                text = item.get("text") if isinstance(item, dict) else item
+                if isinstance(text, str):
+                    for chunk in re.split(r"[，。；、\s]+", text):
                         if len(chunk) >= 2:
                             keywords.append(chunk)
+    for beat in outline.get("required_story_beats", []) or []:
+        if isinstance(beat, dict):
+            for chunk in re.split(r"[，。；、\s]+", str(beat.get("text") or "")):
+                if len(chunk) >= 2:
+                    keywords.append(chunk)
+    for quote_item in outline.get("required_quotes", []) or []:
+        for part in (
+            quote_item.get("quote"),
+            quote_item.get("setup"),
+            quote_item.get("payoff"),
+        ):
+            if isinstance(part, str) and len(part) >= 2:
+                keywords.append(part)
+    for beat in outline.get("beat_plan", []) or []:
+        for key in ("function", "visible_outcome", "entry_state"):
+            value = beat.get(key)
+            if isinstance(value, str):
+                for chunk in re.split(r"[，。；、\s]+", value):
+                    if len(chunk) >= 2:
+                        keywords.append(chunk)
     for event in events:
         for quote in event.get("key_quotes", []) or []:
             if isinstance(quote.get("text"), str) and len(quote["text"]) >= 2:
@@ -303,6 +324,15 @@ def _retrieve(
     events = enrich_event_retrieval_spans(deepcopy(events), chapters)
     events_by_id = _events_by_id(events)
     anchor_ids = list(outline.get("source_event_ids", []) or [])
+    v2_event_ids: list[str] = []
+    for beat in outline.get("required_story_beats", []) or []:
+        for eid in beat.get("event_ids", []) or []:
+            if eid not in v2_event_ids:
+                v2_event_ids.append(eid)
+    for beat in outline.get("beat_plan", []) or []:
+        for eid in beat.get("event_ids", []) or []:
+            if eid not in v2_event_ids:
+                v2_event_ids.append(eid)
     anchor_chapters = list(outline.get("source_chapters", []) or [])
     anchor_chapters = [int(c) for c in anchor_chapters]
 
@@ -314,10 +344,17 @@ def _retrieve(
             ch = event.get("chapter_id")
             if isinstance(ch, int) and ch not in anchor_chapters:
                 anchor_chapters.append(ch)
+    for eid in v2_event_ids:
+        event = events_by_id.get(eid)
+        if event and event not in resolved_events:
+            resolved_events.append(event)
+            ch = event.get("chapter_id")
+            if isinstance(ch, int) and ch not in anchor_chapters:
+                anchor_chapters.append(ch)
 
     dep_ids: list[str] = []
     seen_deps: set[str] = set()
-    for eid in anchor_ids:
+    for eid in anchor_ids + v2_event_ids:
         for dep in _collect_dependencies(eid, events_by_id, seen_deps):
             event = events_by_id.get(dep)
             if event and event not in resolved_events:
@@ -457,6 +494,49 @@ def _retrieve(
         else:
             anchor_fail_reasons[idx] = "pair_not_in_same_chapter"
 
+    # V2 required_quotes: same indivisible quote/pair semantics, tracked under
+    # required_quote coverage instead of dialogue_anchor.
+    for idx, item in enumerate(outline.get("required_quotes", []) or []):
+        if not isinstance(item, dict):
+            continue
+        setup = item.get("setup")
+        payoff = item.get("payoff")
+        quote = item.get("quote")
+        source_event_id = item.get("source_event_id")
+        event = events_by_id.get(source_event_id)
+        candidate_chapters = [event.get("chapter_id")] if event else list(chapter_ids)
+        found = False
+        for ch_id in candidate_chapters:
+            chapter_text = chapters.get(ch_id)
+            if not chapter_text:
+                continue
+            if setup and payoff:
+                s1 = chapter_text.find(setup)
+                s2 = chapter_text.find(payoff)
+                if s1 < 0 or s2 < 0:
+                    continue
+                span = _snap_span(chapter_text, min(s1, s2), max(s1 + len(setup), s2 + len(payoff)))
+                found = True
+            elif quote:
+                pos = chapter_text.find(quote)
+                if pos < 0:
+                    continue
+                span = _snap_span(chapter_text, pos, pos + len(quote))
+                found = True
+            else:
+                continue
+            meta = chapter_meta.get(ch_id, {})
+            chapter_dict = {
+                "chapter_index": ch_id,
+                "title": meta.get("title", ""),
+                "file": meta.get("file", ""),
+                "content_hash": meta.get("content_hash", ""),
+            }
+            excerpts.append(_make_excerpt(chapter_text, chapter_dict, span[0], span[1], f"required_quote:{idx:03d}"))
+            break
+        if not found:
+            anchor_fail_reasons[f"required_quote_{idx}"] = "quote_not_in_source_event"
+
     # Direct event/chapter anchors already satisfy the source request.  Do not
     # double-count them and then search the entire novel for a repeated word.
     # Keyword-only retrieval remains available when no direct anchor exists.
@@ -512,7 +592,13 @@ def _retrieve(
 
     def _priority(ex: dict) -> tuple[int, int, int]:
         reason = str(ex.get("reason", ""))
-        reason_priority = 0 if reason.startswith("event:") else 1 if reason.startswith("dialogue_anchor:") else 2
+        reason_priority = (
+            0
+            if reason.startswith("event:")
+            else 1
+            if reason.startswith(("dialogue_anchor:", "required_quote:"))
+            else 2
+        )
         event_id = str(ex.get("reason", "")).replace("event:", "")
         importance = 1
         for event in resolved_events:
@@ -533,6 +619,7 @@ def _retrieve(
             required = (
                 (reason.startswith("event:") and reason.removeprefix("event:") in anchor_ids)
                 or reason.startswith("dialogue_anchor:")
+                or reason.startswith("required_quote:")
                 or (ex.get("chapter_id") in anchor_chapters and not any(k.get("chapter_id") == ex.get("chapter_id") for k in kept))
             )
             if not required:
@@ -593,7 +680,7 @@ def _build_coverage(
     fallback_used: bool,
     degraded_event_ids: set[str],
     event_fail_reasons: dict[str, str],
-    anchor_fail_reasons: dict[int, str],
+    anchor_fail_reasons: dict[int | str, str],
 ) -> list[dict]:
     ledger: list[dict] = []
     kept_text = "\n".join(ex.get("text", "") for ex in kept)
@@ -660,6 +747,59 @@ def _build_coverage(
             {
                 "anchor_type": "dialogue_anchor",
                 "anchor_id": anchor.get("source_event_id") or anchor.get("source", f"anchor-{idx:03d}"),
+                "requested": True,
+                "resolved": included,
+                "included": included,
+                "omitted": not included,
+                "reason": "" if included else fail_reason,
+            }
+        )
+    for idx, beat in enumerate(outline.get("required_story_beats", []) or []):
+        if not isinstance(beat, dict):
+            continue
+        text_value = str(beat.get("text") or "")
+        event_ids = beat.get("event_ids", []) or []
+        decision_id = beat.get("adaptation_decision_id")
+        if not text_value:
+            continue
+        has_events = bool(event_ids) and all(_has_event_excerpt(str(eid)) for eid in event_ids)
+        has_basis = bool(decision_id) and any(
+            isinstance(b, dict) and b.get("id") == decision_id
+            for b in adaptation_basis
+        )
+        bound = bool(event_ids) or bool(decision_id)
+        included = bound and (has_events or has_basis)
+        ledger.append(
+            {
+                "anchor_type": "required_story_beat",
+                "anchor_id": text_value,
+                "requested": True,
+                "resolved": included,
+                "included": included,
+                "omitted": not included,
+                "reason": (
+                    ""
+                    if included
+                    else (
+                        "missing_binding"
+                        if not bound
+                        else ("event_excerpt_missing" if event_ids and not has_events else "adaptation_basis_missing")
+                    )
+                ),
+            }
+        )
+    for idx, item in enumerate(outline.get("required_quotes", []) or []):
+        if not isinstance(item, dict):
+            continue
+        quote = item.get("quote") or item.get("payoff") or item.get("setup")
+        if not quote:
+            continue
+        included = any(ex.get("reason") == f"required_quote:{idx:03d}" for ex in kept)
+        fail_reason = anchor_fail_reasons.get(f"required_quote_{idx}", "" if included else "quote_not_in_source_event")
+        ledger.append(
+            {
+                "anchor_type": "required_quote",
+                "anchor_id": str(quote),
                 "requested": True,
                 "resolved": included,
                 "included": included,
@@ -750,7 +890,13 @@ def retrieve_source_evidence(
     )
     required_omitted = [
         c for c in result["coverage"]
-        if c.get("anchor_type") in ("event", "chapter", "dialogue_anchor")
+        if c.get("anchor_type") in (
+            "event",
+            "chapter",
+            "dialogue_anchor",
+            "required_story_beat",
+            "required_quote",
+        )
         and c.get("omitted")
         and c.get("reason") != "event_not_found"
     ]
@@ -764,7 +910,14 @@ def retrieve_source_evidence(
         )
         retried_omitted = [
             c for c in retried["coverage"]
-            if c.get("anchor_type") in ("event", "chapter", "dialogue_anchor") and c.get("omitted")
+            if c.get("anchor_type") in (
+                "event",
+                "chapter",
+                "dialogue_anchor",
+                "required_story_beat",
+                "required_quote",
+            )
+            and c.get("omitted")
         ]
         if len(retried_omitted) < len(required_omitted) or not retried_omitted:
             result = retried
