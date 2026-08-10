@@ -87,6 +87,22 @@ def _deviation(
     return "unknown"
 
 
+def _compute_dialogue_budget(preferred_seconds: list | None) -> dict | None:
+    """Dialogue char budget for a target duration window (150 cpm).
+
+    Only dialogue chars drive spoken time, so this is the budget a writer must
+    trim against. Action/description wording never enters the estimate.
+    """
+    if not isinstance(preferred_seconds, list) or len(preferred_seconds) != 2:
+        return None
+    low, high = preferred_seconds
+    return {
+        "min_chars": round(low / 60 * DEFAULT_DIALOGUE_CPM),
+        "max_chars": round(high / 60 * DEFAULT_DIALOGUE_CPM),
+        "basis": f"{DEFAULT_DIALOGUE_CPM} cpm",
+    }
+
+
 def compute_draft_metrics(
     content: str,
     *,
@@ -118,6 +134,9 @@ def compute_draft_metrics(
         "blocking": False,
         "source": "system",
         "advisory_only": True,
+        "dialogue_budget_chars": _compute_dialogue_budget(preferred_seconds),
+        "tolerance_seconds": DEFAULT_DEVIATION_TOLERANCE_SECONDS,
+        "duration_drivers": "台词字数、动作行数、反应次数、转场次数；动作/描写字数不计入时长",
         "measurement_basis": "台词朗读时间+动作行执行时间+反应停顿+转场；仅供编剧预期",
     }
 
