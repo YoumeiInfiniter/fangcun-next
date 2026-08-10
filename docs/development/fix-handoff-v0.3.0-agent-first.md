@@ -13,8 +13,8 @@
   - `3d80eee` feat: propagate per-episode density into context and stage review, support V2 retrieval anchors
   - `ab9d936` feat: bind draft metrics to drafts, enforce system timing advisory and honest experimental API failures
   - `ba8b1b3` test: add v0.3.0 agent-first acceptance and API/metrics regression cases
-  - 本交接文档提交
-- 最终 HEAD：见本文件提交后的 `git rev-parse HEAD`（开发完成时工作树干净）。
+  - `c2470ac` docs: hand off Fangcun Next 0.3.0 agent-first development
+- 最终 HEAD：`c2470ac`（本文件随后只做最终 HEAD 记录提交，工作树干净）。
 
 ## 需求到修改文件和测试的映射
 
