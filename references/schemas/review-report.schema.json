@@ -62,8 +62,10 @@
     "timing_advisory": {
       "type": "object",
       "properties": {
-        "estimated_seconds": {"type": ["integer", "null"], "minimum": 0},
+        "estimated_seconds": {"type": ["number", "null"], "minimum": 0},
+        "estimated_range": {"type": ["array", "null"], "items": {"type": "number"}},
         "preferred_seconds": {"type": ["array", "null"], "items": {"type": "integer"}},
+        "deviation": {"type": ["string", "null"], "enum": ["below", "within", "above", "unknown"]},
         "blocking": {"type": "boolean"}
       }
     },

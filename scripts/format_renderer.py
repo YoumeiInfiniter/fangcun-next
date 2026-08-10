@@ -114,6 +114,10 @@ def render_episode_outline_markdown(episodes: list[dict], density_reports: list[
                 f"- 原文章节：{', '.join(str(x) for x in (outline.get('source_chapters', []) or [])) or '无'}",
             ]
         )
+        if outline.get("episode_focus"):
+            lines.append(f"- 本集记忆点：{outline.get('episode_focus')}")
+        if outline.get("project_rule_refs"):
+            lines.append(f"- 项目规则引用：{', '.join(outline.get('project_rule_refs', []))}")
         if outline.get("suggested_seconds"):
             seconds = outline["suggested_seconds"]
             lines.append(f"- 建议时长：{seconds[0]}–{seconds[-1]} 秒（仅供编剧判断）")
@@ -127,6 +131,18 @@ def render_episode_outline_markdown(episodes: list[dict], density_reports: list[
         for item in outline.get("must_keep", []) or []:
             text = item.get("text") if isinstance(item, dict) else item
             lines.append(f"- {text}")
+        if outline.get("required_story_beats"):
+            lines.extend(["", "必须发生的剧情变化（required_story_beats）："])
+            for beat in outline["required_story_beats"]:
+                lines.append(f"- {beat.get('text')}")
+        if outline.get("required_quotes"):
+            lines.extend(["", "必须保留的台词（required_quotes）："])
+            for item in outline["required_quotes"]:
+                lines.append(f"- {item.get('quote')}")
+        if outline.get("optional_beats"):
+            lines.extend(["", "可选内容（可压缩/删除/延后）："])
+            for beat in outline["optional_beats"]:
+                lines.append(f"- {beat.get('text')}")
         lines.extend(["", "因果链："])
         for chain in outline.get("causal_chains", []) or []:
             lines.append("- " + " → ".join(str(part) for part in chain))
@@ -137,5 +153,14 @@ def render_episode_outline_markdown(episodes: list[dict], density_reports: list[
                     lines.append(f"- 原句：{anchor.get('quote')}")
                 else:
                     lines.append(f"- {anchor.get('setup') or ''} → {anchor.get('payoff') or ''}")
+        if outline.get("beat_plan"):
+            lines.extend(["", "Beat 呈现计划："])
+            for beat in outline["beat_plan"]:
+                lines.append(
+                    f"- {beat.get('beat_id')}：{beat.get('function')} "
+                    f"（{beat.get('presentation', 'full')}；{beat.get('visible_outcome', '')}）"
+                )
+                if beat.get("required_visual_beats"):
+                    lines.append(f"  - 关键视觉落点：{'；'.join(beat['required_visual_beats'])}")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"

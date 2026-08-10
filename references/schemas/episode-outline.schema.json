@@ -22,6 +22,7 @@
     "source_chapters": {"type": "array", "items": {"type": "integer"}},
     "opening_bridge": {"type": "string"},
     "episode_goal": {"type": "string", "minLength": 1},
+    "episode_focus": {"type": "string", "minLength": 1},
     "must_keep": {
       "type": "array",
       "items": {
@@ -33,13 +34,97 @@
             "properties": {
               "text": {"type": "string", "minLength": 1},
               "event_id": {"type": "string", "minLength": 1},
-              "adaptation_decision_id": {"type": "string", "minLength": 1}
+              "adaptation_decision_id": {"type": "string", "minLength": 1},
+              "legacy_classification": {"type": "string", "enum": ["legacy_unspecified"]}
             },
-            "additionalProperties": false
+            "additionalProperties": true
           }
         ]
       },
       "minItems": 1
+    },
+    "required_story_beats": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "text": {"type": "string", "minLength": 1},
+          "event_ids": {"type": "array", "items": {"type": "string"}},
+          "adaptation_decision_id": {"type": "string", "minLength": 1},
+          "priority": {"type": "string", "enum": ["core", "supporting"]}
+        },
+        "additionalProperties": true
+      }
+    },
+    "required_quotes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["quote", "source_event_id"],
+        "properties": {
+          "quote": {"type": "string", "minLength": 1},
+          "source_event_id": {"type": "string", "minLength": 1},
+          "pair_id": {"type": "string", "minLength": 1},
+          "setup": {"type": "string", "minLength": 1},
+          "payoff": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": true
+      }
+    },
+    "project_rule_refs": {"type": "array", "items": {"type": "string"}},
+    "optional_beats": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "text": {"type": "string", "minLength": 1},
+          "event_ids": {"type": "array", "items": {"type": "string"}}
+        },
+        "additionalProperties": true
+      }
+    },
+    "beat_plan": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["beat_id", "function"],
+        "properties": {
+          "beat_id": {"type": "string", "minLength": 1},
+          "function": {"type": "string", "minLength": 1},
+          "event_ids": {"type": "array", "items": {"type": "string"}},
+          "priority": {"type": "string", "enum": ["core", "supporting", "optional"]},
+          "presentation": {"type": "string", "enum": ["full", "condensed", "deferred"]},
+          "estimated_seconds": {
+            "type": "array",
+            "items": {"type": "integer", "minimum": 0},
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "entry_state": {"type": "string"},
+          "visible_outcome": {"type": "string"},
+          "required_visual_beats": {"type": "array", "items": {"type": "string"}}
+        },
+        "additionalProperties": true
+      }
+    },
+    "overflow_options": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["beat_id", "allowed_actions"],
+        "properties": {
+          "beat_id": {"type": "string", "minLength": 1},
+          "allowed_actions": {
+            "type": "array",
+            "items": {"type": "string", "enum": ["compress", "defer", "accept_overflow"]}
+          }
+        },
+        "additionalProperties": true
+      }
     },
     "causal_chains": {
       "type": "array",
@@ -112,7 +197,10 @@
   "anyOf": [
     {"properties": {"source_event_ids": {"minItems": 1}}},
     {"properties": {"source_chapters": {"minItems": 1}}},
-    {"required": ["adaptation_basis"], "properties": {"adaptation_basis": {"minItems": 1}}}
+    {"required": ["adaptation_basis"], "properties": {"adaptation_basis": {"minItems": 1}}},
+    {"properties": {"required_story_beats": {"minItems": 1}}},
+    {"properties": {"required_quotes": {"minItems": 1}}},
+    {"properties": {"beat_plan": {"minItems": 1}}}
   ],
   "additionalProperties": true
 }

@@ -39,11 +39,12 @@
       "type": "object",
       "properties": {
         "minimum_seconds": {"type": "integer"},
-        "preferred_seconds": {"type": ["array", "null"], "items": {"type": "integer"}}
+        "preferred_seconds": {"type": ["array", "null"], "items": {"type": "integer"}},
+        "outline_suggested_seconds": {"type": ["array", "null"], "items": {"type": "integer"}},
+        "density_report": {"type": "object"}
       }
     },
     "review_focus": {"type": ["array", "null"], "items": {"type": "string"}}
   },
   "additionalProperties": true
 }
-

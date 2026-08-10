@@ -90,6 +90,33 @@ def _normalize_events(legacy_events: Any, config_path: Path) -> list[dict]:
     return normalized
 
 
+def mark_legacy_must_keep(outline: dict) -> dict:
+    """Mark unclassifiable legacy must_keep entries for a NEW logical version.
+
+    Historical version files are never rewritten.  Strings that cannot be
+    reliably classified as story beat / quote / project rule / style hint are
+    preserved as text and explicitly tagged legacy_unspecified instead of
+    letting the model silently guess a category.
+    """
+    result = dict(outline)
+    entries = list(outline.get("must_keep", []) or [])
+    converted = []
+    for item in entries:
+        if isinstance(item, str):
+            converted.append(
+                {
+                    "text": item,
+                    "legacy_classification": "legacy_unspecified",
+                }
+            )
+        else:
+            converted.append(item)
+    if converted:
+        result["must_keep"] = converted
+    result["outline_schema_version"] = "v2"
+    return result
+
+
 def migrate_project(legacy_config_path: Path, out_dir: Path) -> dict:
     """Migrate one legacy project into the new layout (copy-only)."""
     legacy_config_path = legacy_config_path.resolve()
@@ -213,4 +240,3 @@ def render_migration_report(report: dict) -> str:
     lines.extend(["", "## 警告", *[f"- {w}" for w in report.get("warnings", [])]])
     lines.extend(["", "## 说明", "- 迁移只复制，不删除或修改旧文件。", "- 旧 story_skeleton.md 需要编剧确认后重新生成结构化集纲 JSON。"])
     return "\n".join(lines) + "\n"
-
