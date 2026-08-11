@@ -29,5 +29,5 @@
 
 ## 首轮范围
 
-飞书自动同步、评论读回、OpenClaw 子 Bot、Dashboard、Token 统计均为 P2，本版本不实现；只保留接口约定。
+飞书群聊下的产物交付事件流已在 v0.3.6 实现：CLI 输出 `FANGCUN_FEISHU_SYNC_EVENT`，Host Agent 使用一等 `feishu_doc` 工具创建/写入/读回校验版本化文档并登记 registry。飞书评论读回、在线正文修改回流、OpenClaw 子 Bot、Dashboard、Token 统计仍为 P2，只保留接口约定。
 
