@@ -36,6 +36,27 @@ description: |
 精修、编剧上传自己的版本作为定稿、评论/正文局部修改。因时长超出预期而自动
 回退到早期阶段是禁止行为；是否整体重做只由编剧明确决定。
 
+## 集纲事件浏览器（编剧对照原文判断故事选取）
+
+事件资产与集纲确认后，可生成一个**纯本地、零模型调用**的可交互 HTML
+（约 1–2 秒/本），供编剧打开后对照集纲快速核查“本集用了哪些故事、哪些被裁”，
+并直接跳回原小说对应段落：
+
+- 生成：`fangcun event-browser --dir <项目>`，产物固定为 `<项目>/event_browser/index.html`。
+- 内容：左侧按章列出**全部已提取事件**（ID＋一句话摘要＋✔第N集选用/✘被裁徽标，
+  支持按关键词搜索、按 全部/选用/被裁 筛选）；右侧为原文章节全文，
+  点击任意事件（列表或正文高亮处）弹出事件详情（事件/触发/动作/结果/关键原句/
+  重要度/建议时长）并滚动高亮原文 span。
+- 自动更新：`save-events`、`save-episode-outline`、`confirm-stage`(episode_outline)
+  之后会自动重建该 HTML，因此编剧对集纲的任何已保存修改都会立即反映到浏览器。
+- 前提与边界：
+  - 依赖事件资产（含 `source_span`）与集纲活动版本；事件只覆盖已做事件提取的章节
+    （如测试范围前 30 章），未提取章节不会出现在事件表中；
+  - 编剧若要把某段**从未提取的原文**加进集纲，需要先对该章做事件提取与坐标定位
+    （`stage_events.md` + `locate-span`，每章约一次模型调用），再做集纲修改；
+  - HTML 是只读浏览视图，集纲的修改面仍是 `save-episode-outline`（按集 upsert 或
+    `--replace` 整表替换），改完系统自动重建浏览器。
+
 ## 标准模式与快速草稿模式
 
 - 标准模式（默认）：`get-episode-context` → Writer 一次生成 → `save-draft` →
@@ -78,6 +99,7 @@ description: |
 | 时长预估 | `forecast-duration --dir <project>` |
 | 进度 | `status --dir <project>` |
 | 导出 | `export --dir <project> [--xml]` |
+| 集纲事件浏览器 | `event-browser --dir <project>`（编剧对照集纲与原文：左侧全事件表 ✔选用/✘被裁、可搜索/筛选；点事件右侧跳转并高亮原文 span；`save-events` / `save-episode-outline` / `confirm-stage(episode_outline)` 后自动重建，也可手动重跑） |
 | 迁移旧项目 | `migrate --legacy-config <旧config> --out-dir <目录>` |
 | 生成发布包 | `build-package --out dist/fangcun-next-<version>.zip` |
 

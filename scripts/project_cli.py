@@ -250,6 +250,7 @@ def cmd_save_events(args) -> int:
         ext="json",
     )
     print(f"事件资产已保存：{result['path']}（{result['version']}，{len(events)} 个事件）")
+    _rebuild_event_browser(project_dir)
     return 0
 
 
@@ -741,6 +742,7 @@ def cmd_save_episode_outline(args) -> int:
     print(f"同步可读版：{md_result['path']}（sync={outline_sync_id[:12]}）")
     print(f"合并报告：{json.dumps(merge_report, ensure_ascii=False)}")
     print(density_aggregate["summary"])
+    _rebuild_event_browser(project_dir)
     return 0
 
 
@@ -1911,6 +1913,31 @@ def cmd_cancel_rewrite_ticket(args) -> int:
     return 0
 
 
+def _rebuild_event_browser(project_dir: Path) -> None:
+    """集纲事件浏览器自动重建（best-effort，绝不阻断主流程）。
+
+    依赖：事件资产 + episode_outline 活动版本；任一缺失则静默跳过。
+    编剧修改集纲/事件后（save-events / save-episode-outline / confirm-stage），
+    该函数被调用，HTML 立即跟随最新版本更新。
+    """
+    try:
+        from .event_browser import build_event_browser, default_out
+        out = default_out(project_dir)
+        build_event_browser(project_dir, out)
+        print(f"事件浏览器已自动更新：{out}")
+    except Exception as exc:  # noqa: BLE001 - 重建失败不影响主操作
+        print(f"事件浏览器自动更新跳过（{exc}）")
+
+
+def cmd_event_browser(args) -> int:
+    project_dir = _project_dir(args)
+    from .event_browser import build_event_browser, default_out
+    out = Path(args.out).expanduser().resolve() if getattr(args, "out", None) else default_out(project_dir)
+    result = build_event_browser(project_dir, out, getattr(args, "title", "") or f"{project_dir.name} 集纲事件浏览器")
+    print(f"事件浏览器已生成：{result}")
+    return 0
+
+
 def cmd_status(args) -> int:
     project_dir = _project_dir(args)
     status = project_status(project_dir)
@@ -2106,6 +2133,7 @@ def cmd_confirm_stage(args) -> int:
                 operator=args.operator,
                 reason="paired JSON episode outline confirmed",
             )
+        _rebuild_event_browser(project_dir)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
@@ -2475,6 +2503,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dir", required=True)
     p.add_argument("--up-to", type=int, default=10_000)
     p.set_defaults(func=cmd_forecast_duration)
+
+    p = sub.add_parser("event-browser", help="生成集纲事件浏览器 HTML（编剧对照集纲与原文，查看选用/被裁）")
+    p.add_argument("--dir", required=True)
+    p.add_argument("--out", help="输出 HTML 路径（默认 <项目>/event_browser/index.html）")
+    p.add_argument("--title", help="页面标题")
+    p.set_defaults(func=cmd_event_browser)
 
     p = sub.add_parser("status")
     p.add_argument("--dir", required=True)
