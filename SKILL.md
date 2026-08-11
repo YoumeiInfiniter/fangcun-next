@@ -116,7 +116,7 @@ API 模式（实验性）：只有用户明确要求或项目配置明确启用�
 2. **Creative Core**：`references/prompts/` 各阶段 Prompt + `references/genres/`、`references/craft/` 按需模块。
 3. **Deterministic Runtime**：`scripts/` 下的 Schema 校验、状态版本、原文检索、上下文构建、格式校验、连续性与时长。
 4. **Provider Adapter**：`scripts/model_adapter.py`，Host Agent 与 API 共用同一上下文与校验器。
-5. **Platform Adapter**：`references/platform-adapters.md` 与迁移层，飞书/OpenClaw 只作为可选 P2 适配，不进入创作核心。
+5. **Platform Adapter**：`references/platform-adapters.md`、`references/feishu-artifact-sync.md` 与迁移层，飞书/OpenClaw 只作为可选适配，不进入创作核心。在飞书群聊环境下，阶段 Markdown/TXT 产物落盘后会稳定打印 `FANGCUN_FEISHU_SYNC_EVENT:` 交付事件，由 Host Agent 用一等 `feishu_doc` 工具完成在线文档创建、读回校验与登记。
 
 ## 最高规则
 
@@ -133,6 +133,7 @@ API 模式（实验性）：只有用户明确要求或项目配置明确启用�
 11. 改编指引、故事大纲和集纲的 AI 产物保存后只能处于 `needs_writer_confirmation`；审核与编剧确认不可省略，未确认或上游已变化时下游命令硬阻断。
 12. 阶段输出必须携带生成时的 `stage_context_hash`；项目配置、上游版本或内容哈希变化后，旧输出拒绝保存。Agent 不得擅自使用人工导入/override 通道。
 13. `save-stage-review` 后必须结束当前任务并展示产物与审核结论；只有编剧在后续消息明确确认该版本时才能调用 `confirm-stage`。任务目标、批量运行要求、Agent 自填 `operator=writer` 或推测的“预授权”都不构成确认。
+14. 在飞书群聊中，`project_brief`、`adaptation_strategy`、`story_outline`、`episode_outline_md`、`script_draft`、`review_md`、`stage_review_md` 等用户验收产物保存后，Host Agent 必须响应 `FANGCUN_FEISHU_SYNC_EVENT`：创建版本化飞书文档、写入并读回校验，成功后登记 registry、回复链接并停止等待确认；403/写入失败/读回不一致不得假装成功。
 
 ## 降级与诚实
 
@@ -175,7 +176,7 @@ API 模式（实验性）：只有用户明确要求或项目配置明确启用�
 
 ## 安全边界
 
-- 不执行真实飞书写入、不修改线上文档、不使用公司凭据，除非用户明确授权并指定目标。
+- 飞书群聊默认交付属于已授权的平台适配：当 CLI 打印 `FANGCUN_FEISHU_SYNC_EVENT` 时，Host Agent 应使用一等 `feishu_doc` 工具创建/写入/读回校验版本化文档并登记 registry；无需用户再次说“发成飞书文档”。除此之外，不执行未请求的线上文档修改、不使用公司凭据、不向未指定目标写入。
 - 项目目录、`_cache/`、`output/`、`logs/`、密钥、小说原文与内部调研材料不进入发布包。
 - 发布包由 `build-package` 生成，内含私密内容模式扫描，命中即拒绝。
 
@@ -191,6 +192,6 @@ API 模式（实验性）：只有用户明确要求或项目配置明确启用�
 - `references/genre-router.md` 与 `references/genres/`、`references/craft/`：Craft 路由；
 - `references/revision-policy.md`：修改来源、影响分析与定稿后动作；
 - `references/platform-adapters.md`：平台能力探测与 P2 适配边界；
-- `references/feishu-artifact-sync.md`：飞书群聊下的产物文档镜像、版本登记与反向同步；
+- `references/feishu-artifact-sync.md`：飞书群聊阶段产物交付事件、版本化文档、registry 与失败处理；
 - `references/schemas/`：全部机器可读数据契约；
 - `references/prompts/`：分层 Prompt（系统底线、Writer、Reviewer、Rewriter、各阶段）。
