@@ -4,6 +4,8 @@ description: |
   小说转短剧剧本改编引擎（新版，编剧最终作者、AI 可控助手）。
   触发方式：「写剧本」「改编短剧」「小说转剧本」「帮我写剧本」「用fangcun」
   「分析这本书」「继续写」「改一下第N集」。
+  在飞书群聊环境下，Fangcun 产物落盘后自动启用飞书交付适配；
+  「发成飞书文档」「输出到飞书」「同步回本地」「文档版本」为显式兜底触发。
 ---
 
 # Fangcun Next：小说转短剧 Skill 系统
@@ -140,6 +142,15 @@ API 模式（实验性）：只有用户明确要求或项目配置明确启用�
 - 原文事件的精确 `source_span` 用于证据校验，独立的 `retrieval_span` 用于提供触发—行动—反应—结果上下文；不得把一个孤立原句当成完整事件上下文。
 - `must_keep` 和台词锚点必须绑定真实事件或明确改编决策；未解析的自由文本、缺一端的问答/铺垫回收对在集纲保存时即拒绝。
 
+## 飞书交付适配（可选 P2）
+
+检测到当前交互环境为飞书群聊，且 Fangcun 产物已落盘并需要交付用户验收时，
+**默认自动启用**飞书交付适配；无需用户额外说“发成飞书文档”。按需读取
+`references/feishu-artifact-sync.md`，用 `scripts/artifact_sync_registry.py`
+登记本地文件与飞书文档版本。显式触发词只用于用户主动要求重发、指定地址、
+反向同步或非默认场景。该适配只处理产物镜像、版本命名、反向同步，不得改变
+阶段门禁、审核结论、编剧确认规则或创作内容。
+
 ## 安全边界
 
 - 不执行真实飞书写入、不修改线上文档、不使用公司凭据，除非用户明确授权并指定目标。
@@ -158,5 +169,6 @@ API 模式（实验性）：只有用户明确要求或项目配置明确启用�
 - `references/genre-router.md` 与 `references/genres/`、`references/craft/`：Craft 路由；
 - `references/revision-policy.md`：修改来源、影响分析与定稿后动作；
 - `references/platform-adapters.md`：平台能力探测与 P2 适配边界；
+- `references/feishu-artifact-sync.md`：飞书群聊下的产物文档镜像、版本登记与反向同步；
 - `references/schemas/`：全部机器可读数据契约；
 - `references/prompts/`：分层 Prompt（系统底线、Writer、Reviewer、Rewriter、各阶段）。
