@@ -797,6 +797,85 @@ def _print_pending_revisions(project_dir: Path, episode: int) -> None:
         print("  继续创作前请先 approve-revision / reject-revision 处理。")
 
 
+
+def _contract_semantic_coverage_errors(draft_text: str, context: dict) -> list[str]:
+    """Best-effort deterministic guardrail for must-keep semantic coverage.
+
+    Format validators cannot know whether a Writer silently compressed away a
+    required story beat.  This check is intentionally conservative: it extracts
+    short obligations from the current episode contract (must_keep and
+    required_story_beats), then verifies that their key Chinese characters are
+    present in the draft.  It does not judge literary quality; it blocks only
+    obvious omissions such as a contract saying “救人变人” while the draft never
+    mentions rescue/death/transformation.
+    """
+    import re
+
+    outline = (context or {}).get("episode_outline") or {}
+    if not isinstance(outline, dict):
+        return []
+
+    raw_items: list[str] = []
+    for item in outline.get("must_keep") or []:
+        if isinstance(item, dict):
+            value = item.get("text")
+        else:
+            value = item
+        if value:
+            raw_items.append(str(value))
+    for beat in outline.get("required_story_beats") or []:
+        if isinstance(beat, dict) and beat.get("text"):
+            raw_items.append(str(beat.get("text")))
+
+    def norm(value: str) -> str:
+        return re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]", "", str(value)).lower()
+
+    script_norm = norm(draft_text)
+    # High-frequency glue characters.  Keep concrete nouns/verbs such as 狗、屎、救、变、主人.
+    stop_chars = set("的了和与及在把被为是这那一个人本集核心事件目标推进制造结尾钩子误会")
+    obligations: list[str] = []
+    for raw in raw_items:
+        # Split explicit list punctuation; also split arrows, slashes and semicolons.
+        parts = re.split(r"[、，,；;；/|→]+", raw)
+        for part in parts:
+            part = part.strip()
+            if len(norm(part)) >= 2:
+                obligations.append(part)
+
+    errors: list[str] = []
+    seen: set[str] = set()
+    for obligation in obligations:
+        n = norm(obligation)
+        if not n or n in seen:
+            continue
+        seen.add(n)
+        if n in script_norm:
+            continue
+        # Domain-neutral enough compound handling: some required beats are compressed labels
+        # whose concrete screenplay expression uses related action words rather than the
+        # exact label.  Keep this small and explicit so it catches omissions without
+        # pretending to understand arbitrary prose.
+        if "救人" in n or "变人" in n:
+            rescue_ok = any(token in script_norm for token in ("救", "落水", "叼住", "冲进水", "往岸边游"))
+            transform_ok = any(token in script_norm for token in ("变成人", "成人", "现在是人", "绑定"))
+            if rescue_ok and transform_ok:
+                continue
+        key_chars = []
+        for ch in n:
+            if ch in stop_chars:
+                continue
+            if ch not in key_chars:
+                key_chars.append(ch)
+        # Very short or fully generic obligations are not useful deterministic checks.
+        if len(key_chars) < 2:
+            continue
+        hits = sum(1 for ch in key_chars if ch in script_norm)
+        ratio = hits / max(1, len(key_chars))
+        if hits >= 2 and ratio >= 0.65:
+            continue
+        errors.append(f"必保留语义疑似未覆盖：{obligation}（命中 {hits}/{len(key_chars)} 个关键字）")
+    return errors
+
 def cmd_save_draft(args) -> int:
     project_dir = _project_dir(args)
     from .script_validator import validate_script
@@ -822,10 +901,13 @@ def cmd_save_draft(args) -> int:
             print("  -", w["message"])
     context_hash = getattr(args, "context_hash", None) or None
     if context_hash:
-        _load_context_snapshot_by_hash(project_dir, args.episode, context_hash)
+        context = _load_context_snapshot_by_hash(project_dir, args.episode, context_hash)
     else:
         context = _load_context_snapshot(project_dir, args.episode)
         context_hash = context["context_hash"]
+    coverage_errors = _contract_semantic_coverage_errors(text, context)
+    if coverage_errors:
+        raise CliError("草稿必保留语义未覆盖：\n" + "\n".join(f"- {e}" for e in coverage_errors[:20]))
     draft_hash = sha256_text(text)
     ticket_id = getattr(args, "rewrite_ticket", None) or None
     origin = "manual"
