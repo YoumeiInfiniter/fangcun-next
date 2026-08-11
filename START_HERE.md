@@ -81,6 +81,6 @@ PYTHONPATH="$PWD" .venv/bin/python -m unittest discover -s tests/smoke -p 'test_
 
 - unit 129 / regression 165 / smoke 4 全绿；隐藏变体 43/43 通过（时长容差、确认继承与批量确认、locate-span 边界）；
 - 旧版 38 项测试基线随旧运行时一并迁出归档，由 Git 历史追溯；
-- 发布包构建：`build-package --out dist/fangcun-next-0.3.4.zip`。
+- 发布包构建：`build-package --out dist/fangcun-next-0.3.5.zip`。
 
 既有失败基线不再作为活动仓库测试入口；新增或修改必须保持 unit/regression/smoke 无新增失败。
