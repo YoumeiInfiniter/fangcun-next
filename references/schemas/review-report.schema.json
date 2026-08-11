@@ -31,7 +31,8 @@
             "shootability",
             "timing",
             "format",
-            "other"
+            "other",
+            "transition"
           ]},
           "location": {"type": "string"},
           "problem": {"type": "string", "minLength": 1},

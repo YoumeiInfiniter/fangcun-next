@@ -809,6 +809,11 @@ def cmd_save_draft(args) -> int:
     report = validate_script(text, format_profile="default-cn", expected_episode=args.episode)
     if not report["ok"]:
         raise CliError("草稿格式未通过：\n" + "\n".join(f"- {e['message']}" for e in report["errors"][:10]))
+    bridge_warnings = [w for w in report.get("warnings", []) if w.get("code") == "scene_jump_needs_bridge"]
+    if bridge_warnings:
+        print("提示（advisory，不阻断）：以下场景可能存在跳切，请确认是否已补过渡桥（过渡动作/OS/△转场，依据优先还原原文衔接）：")
+        for w in bridge_warnings[:5]:
+            print("  -", w["message"])
     context_hash = getattr(args, "context_hash", None) or None
     if context_hash:
         _load_context_snapshot_by_hash(project_dir, args.episode, context_hash)

@@ -182,6 +182,45 @@ def _parse_lines(lines: list[str], errors: list[dict], warnings: list[dict]) -> 
         if prev["scene_key"] == curr["scene_key"]:
             errors.append({"line": curr["line"], "code": "consecutive_scene_key", "message": f"连续两场 scene key 完全相同（{curr['scene_key']}），必须合并为同一场"})
 
+    # 场景跳变检测（advisory）：删节/压缩中间事件后，若相邻场景在地点或时间上跳变，
+    # 且上一场景以台词收尾、下一场景以台词开场、又无转场标识，视为可能的生硬跳切，
+    # 提示 Writer 补过渡桥。仅提示，不阻断保存。
+    TRANSITION_MARKERS = ("转场", "快进", "蒙太奇", "闪回", "快切", "跳转", "切至", "闪白")
+
+    def _scene_last_kind(scene):
+        items = scene["dialogues"] + scene["actions"]
+        if not items:
+            return None
+        tail = max(items, key=lambda x: x["line"])
+        return "dialogue" if tail in scene["dialogues"] else "action"
+
+    def _scene_first_kind(scene):
+        items = scene["dialogues"] + scene["actions"]
+        if not items:
+            return None
+        head = min(items, key=lambda x: x["line"])
+        return "dialogue" if head in scene["dialogues"] else "action"
+
+    for prev, curr in zip(scenes, scenes[1:]):
+        if prev["location"] == curr["location"] and prev["time"] == curr["time"]:
+            continue  # 同地点同时段，不算跳切
+        marker_hit = any(
+            m in (a["text"] or "") for a in prev["actions"] for m in TRANSITION_MARKERS
+        )
+        if marker_hit:
+            continue
+        if _scene_last_kind(prev) == "dialogue" and _scene_first_kind(curr) == "dialogue":
+            warnings.append({
+                "line": curr["line"],
+                "code": "scene_jump_needs_bridge",
+                "message": (
+                    f"场景 {prev['episode']}-{prev['scene_no']}（{prev['location']} {prev['time']}）到 "
+                    f"{curr['episode']}-{curr['scene_no']}（{curr['location']} {curr['time']}）可能跳切："
+                    "上一场景以台词收尾、下一场景以台词开场且无转场标识。若因删节/压缩产生，"
+                    "请补过渡桥（过渡动作行 / OS 承接句 / △转场），依据优先还原原文衔接。"
+                ),
+            })
+
     return {
         "episode_header": episode_header,
         "episode_header_line": episode_header_line,
