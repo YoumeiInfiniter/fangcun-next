@@ -14,6 +14,14 @@
 
 当运行上下文显示当前交互为飞书群聊（例如 `channel=feishu` 且 `chat_type=group`），并且 Fangcun Next 生成了用户需要验收的 Markdown/TXT 产物时，**默认自动启用**本适配，不需要用户额外说“发成飞书文档”。
 
+实现上，CLI 保存阶段产物后会调用 `scripts/feishu_artifact_delivery.py` 生成稳定的机器可读事件：
+
+```text
+FANGCUN_FEISHU_SYNC_EVENT:{...}
+```
+
+Host Agent / OpenClaw 层看到该事件后，必须使用一等 `feishu_doc` 工具执行创建、写入、读回校验；校验成功后再运行事件里的 `record_command` 登记 registry。Python runner 不直接调用飞书 Open API。
+
 ### 显式触发（兜底）
 
 以下表达用于非默认场景、重发、指定位置或反向同步：
@@ -92,6 +100,11 @@
 
 ```json
 {
+  "enabled": true,
+  "channel": "feishu",
+  "chat_type": "group",
+  "auto_sync_on_group": true,
+  "stop_for_confirmation": true,
   "project": "项目名",
   "default_folder_token": "fld_xxx",
   "default_wiki_parent_token": null,
@@ -108,38 +121,25 @@
 ## 本地文件 → 飞书文档
 
 1. 确认本地产物路径、项目名、阶段名、label。
-2. 用脚本计算下一版信息：
+2. 用 runner 计算下一版信息并生成 pending 事件：
 
 ```bash
-skills/fangcun-next/scripts/artifact_sync_registry.py next \
-  --registry memory/feishu-artifact-sync.json \
-  --local-path <path> \
-  --project <project> \
-  --stage <stage> \
-  --label <label>
+skills/fangcun-next/scripts/feishu_artifact_delivery.py plan \
+  --project-dir <project-dir> \
+  --kind story_outline \
+  --local-path <path>
 ```
 
-3. 读取本地文件全文。
-4. 创建/写入飞书文档：
+常规 `project_cli.py save-*` 命令会自动执行这一步并打印 `FANGCUN_FEISHU_SYNC_EVENT`，无需人工再跑。
+
+3. Host Agent 读取本地文件全文。
+4. Host Agent 创建/写入飞书文档：
    - 新版本：`feishu_doc create` → `feishu_doc write`
    - 指定已有文档：直接 `feishu_doc write`
    - 注意：`feishu_doc create` 的 `content` 参数不生效，必须两步走。
 5. `feishu_doc read` 做写后校验。
-6. 用脚本登记版本：
-
-```bash
-skills/fangcun-next/scripts/artifact_sync_registry.py record \
-  --registry memory/feishu-artifact-sync.json \
-  --local-path <path> \
-  --project <project> \
-  --stage <stage> \
-  --label <label> \
-  --version v001 \
-  --doc-token <doc_token> \
-  --title <title>
-```
-
-7. 回复用户：文档链接 + 版本号 + 权限/校验结果。
+6. 用事件中的 `record_command` 登记版本；它会拒绝未传 `--readback-ok` 的结果，并复核本地文件 sha256 未变化。
+7. 回复用户：文档链接 + 版本号 + 权限/校验结果，然后停止等待编剧/导演确认，不继续进入下一阶段。
 
 ## 飞书文档 → 本地文件
 

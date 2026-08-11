@@ -20,6 +20,7 @@ from typing import Any
 from . import __version__
 from .common import atomic_write_json, ensure_dir, now_iso, read_json, slugify
 from .common import sha256_text
+from .feishu_artifact_delivery import maybe_emit_sync_event
 from .schema_validate import SchemaValidationError, ensure_valid
 from .state_store import (
     active_artifact_path,
@@ -153,6 +154,7 @@ def cmd_save_requirements(args) -> int:
         ext="md",
     )
     print(f"需求已保存：{result['path']}（{result['version']}）")
+    maybe_emit_sync_event(project_dir, kind="project_brief", result=result)
     return 0
 
 
@@ -413,6 +415,7 @@ def _save_stage_text(
             meta={"manual_import": True, "manual_reason": manual_reason.strip()},
         )
     print(f"{kind} 已保存：{result['path']}（{result['version']}）")
+    maybe_emit_sync_event(project_dir, kind=kind, result=result)
     if summary_file:
         summary = _load_json_file(Path(summary_file), "结构化摘要")
         if summary_schema:
@@ -740,6 +743,7 @@ def cmd_save_episode_outline(args) -> int:
         print("提示：--outline-md 已弃用；可读版现在始终由集纲 JSON 自动生成，避免版本漂移。")
     print(f"集纲已保存：{result['path']}（{result['version']}，共 {len(merged)} 集）")
     print(f"同步可读版：{md_result['path']}（sync={outline_sync_id[:12]}）")
+    maybe_emit_sync_event(project_dir, kind="episode_outline_md", result=md_result)
     print(f"合并报告：{json.dumps(merge_report, ensure_ascii=False)}")
     print(density_aggregate["summary"])
     _rebuild_event_browser(project_dir)
@@ -942,6 +946,7 @@ def cmd_save_draft(args) -> int:
     )
     _print_pending_revisions(project_dir, args.episode)
     print(f"草稿已保存：{result['path']}（{result['version']}，draft_hash={draft_hash[:12]}，context_hash={context_hash[:12]}）")
+    maybe_emit_sync_event(project_dir, kind="script_draft", result=result, episode=args.episode)
     print(
         f"草稿指标已保存：{metrics_result['path']}"
         f"（约 {metrics['estimated_seconds']} 秒，偏差 {metrics['deviation']}，仅提示）"
@@ -1248,6 +1253,29 @@ def cmd_review(args) -> int:
     return 0
 
 
+def _render_json_report_markdown(title: str, data: dict) -> str:
+    summary = str(data.get("summary") or "")
+    verdict = str(data.get("verdict") or "")
+    issues = data.get("issues") if isinstance(data.get("issues"), list) else []
+    lines = [f"# {title}", "", f"- 结论：{verdict}", f"- 摘要：{summary}", f"- 问题数：{len(issues)}", ""]
+    if issues:
+        lines.append("## 问题清单")
+        for item in issues:
+            if not isinstance(item, dict):
+                continue
+            lines.extend([
+                "",
+                f"### {item.get('id', 'ISSUE')}",
+                f"- 严重度：{item.get('severity', '')}",
+                f"- 分类：{item.get('category', '')}",
+                f"- 问题：{item.get('problem', '')}",
+            ])
+            if item.get("fix"):
+                lines.append(f"- 修改建议：{item.get('fix')}")
+    lines.extend(["", "## 原始 JSON", "", "```json", json.dumps(data, ensure_ascii=False, indent=2), "```", ""])
+    return "\n".join(lines)
+
+
 def _save_review(
     project_dir: Path,
     episode: int,
@@ -1328,7 +1356,19 @@ def _save_review(
         operator=review_source,
         reason="semantic review saved with bound draft_metrics",
     )
+    md_result = commit_artifact(
+        project_dir,
+        "review_md",
+        content=_render_json_report_markdown(f"第{episode}集审核报告", report_data),
+        episode=episode,
+        source="system",
+        status="approved",
+        ext="md",
+        meta={"json_review_version": result["version"], "json_review_hash": result["content_hash"]},
+    )
     print(f"审核报告已保存：{result['path']}（{result['version']}）")
+    print(f"审核报告可读版：{md_result['path']}（{md_result['version']}）")
+    maybe_emit_sync_event(project_dir, kind="review_md", result=md_result, episode=episode)
     print(f"结论：{report_data.get('verdict')} | {report_data.get('summary')}")
     print(f"问题数：{len(report_data.get('issues', []))}")
 
@@ -2103,7 +2143,18 @@ def _save_stage_review_data(
             "review_source": review_source,
         },
     )
+    md_result = commit_artifact(
+        project_dir,
+        "stage_review_md",
+        content=_render_json_report_markdown(f"{stage} 阶段审核报告", data),
+        source="system",
+        status="approved",
+        ext="md",
+        meta={"stage": stage, "json_review_version": result["version"], "json_review_hash": result["content_hash"]},
+    )
     print(f"阶段审核已保存：{result['path']}（{data['verdict']}）")
+    print(f"阶段审核可读版：{md_result['path']}（{md_result['version']}）")
+    maybe_emit_sync_event(project_dir, kind="stage_review_md", result=md_result)
 
 
 def cmd_confirm_stage(args) -> int:

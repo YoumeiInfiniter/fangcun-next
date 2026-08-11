@@ -1,5 +1,7 @@
 """End-to-end tests for the Fangcun Next CLI."""
 
+import contextlib
+import io
 import json
 import os
 import tempfile
@@ -114,13 +116,35 @@ class ProjectCliTests(unittest.TestCase):
         self.outlines.write_text(json.dumps({"episodes": OUTLINES}, ensure_ascii=False), encoding="utf-8")
         self.script = self.root / "script1.txt"
         self.script.write_text(SCRIPT1, encoding="utf-8")
+        self._old_workspace_root = os.environ.get("FANGCUN_WORKSPACE_ROOT")
+        os.environ["FANGCUN_WORKSPACE_ROOT"] = str(self.root)
 
     def tearDown(self):
+        if self._old_workspace_root is None:
+            os.environ.pop("FANGCUN_WORKSPACE_ROOT", None)
+        else:
+            os.environ["FANGCUN_WORKSPACE_ROOT"] = self._old_workspace_root
         self._tmp.cleanup()
 
     def run_cli(self, *argv, expect=0):
         code = main(list(argv))
         self.assertEqual(code, expect, f"CLI 失败: {argv}")
+
+    def enable_feishu_group_delivery(self):
+        (self.project_dir / ".feishu-output.json").write_text(
+            json.dumps(
+                {
+                    "enabled": True,
+                    "channel": "feishu",
+                    "chat_type": "group",
+                    "auto_sync_on_group": True,
+                    "stop_for_confirmation": True,
+                    "default_folder_token": None,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
 
     def _draft_binding(self, episode: int) -> dict:
         from scripts.state_store import active_version_id, draft_meta_record
@@ -259,6 +283,52 @@ class ProjectCliTests(unittest.TestCase):
         brief = self.project_dir / "state" / "project_brief_input.md"
         self.assertTrue(brief.exists())
         self.assertIn("15集甜宠", brief.read_text(encoding="utf-8"))
+
+    def test_save_stage_emits_feishu_sync_event_in_group_context(self):
+        self.run_cli("init", "--dir", str(self.project_dir), "--config", str(self.config_file))
+        self.enable_feishu_group_delivery()
+        strategy = self.root / "strategy.md"
+        strategy.write_text("# 改编指引\n\n请导演验收。\n", encoding="utf-8")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.run_cli(
+                "save-adaptation", "--dir", str(self.project_dir), "--file", str(strategy),
+                "--manual-import", "--manual-reason", "unit-test writer fixture",
+            )
+        lines = [line for line in buf.getvalue().splitlines() if line.startswith("FANGCUN_FEISHU_SYNC_EVENT:")]
+        self.assertEqual(len(lines), 1)
+        event = json.loads(lines[0].split(":", 1)[1])
+        self.assertEqual(event["kind"], "adaptation_strategy")
+        self.assertEqual(event["sync_version"], "v001")
+        self.assertIsNone(event["folder_token"])
+        self.assertIn("未指定输出文件夹", event.get("notice", ""))
+        self.assertTrue(Path(event["event_file"]).exists())
+
+    def test_feishu_delivery_record_requires_readback_and_writes_registry(self):
+        from scripts.feishu_artifact_delivery import main as delivery_main
+
+        self.run_cli("init", "--dir", str(self.project_dir), "--config", str(self.config_file))
+        self.enable_feishu_group_delivery()
+        outline = self.root / "outline.md"
+        outline.write_text("# 故事大纲\n\n验收版。\n", encoding="utf-8")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.run_cli(
+                "save-story-outline", "--dir", str(self.project_dir), "--file", str(outline),
+                "--manual-import", "--manual-reason", "unit-test writer fixture",
+            )
+        event_line = next(line for line in buf.getvalue().splitlines() if line.startswith("FANGCUN_FEISHU_SYNC_EVENT:"))
+        event = json.loads(event_line.split(":", 1)[1])
+        with self.assertRaises(SystemExit):
+            delivery_main(["record", "--event-file", event["event_file"], "--doc-token", "DOC123", "--url", "https://feishu.cn/docx/DOC123"])
+        delivery_main([
+            "record", "--event-file", event["event_file"], "--doc-token", "DOC123",
+            "--url", "https://feishu.cn/docx/DOC123", "--readback-ok",
+        ])
+        registry = json.loads(Path(event["registry"]).read_text(encoding="utf-8"))
+        version = registry["artifacts"][0]["versions"][0]
+        self.assertEqual(version["doc_token"], "DOC123")
+        self.assertEqual(version["version"], "v001")
 
     def test_save_episode_outline_accepts_single_object(self):
         self.run_cli("init", "--dir", str(self.project_dir), "--config", str(self.config_file))
