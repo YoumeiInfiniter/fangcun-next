@@ -936,7 +936,8 @@ class Round2ContextFormatTests(Round1BypassBase):
         self._events()
         self._save_outlines([self._outline(1)])
         self._context(1)
-        xml_text = '<scriptItem name="EP001">\n第1集：第1集\n\n1-1 家 夜 内\n人物：叶聆\n\n△动作。\n叶聆：A。\n</scriptItem>\n'
+        # v0.3.6 语义覆盖守卫要求草稿包含 must_keep 节拍“系统登场”。
+        xml_text = '<scriptItem name="EP001">\n第1集：第1集\n\n1-1 家 夜 内\n人物：叶聆\n\n△系统登场。\n△动作。\n叶聆：A。\n</scriptItem>\n'
         path = self.root / "xml_draft.txt"
         path.write_text(xml_text, encoding="utf-8")
         _run("save-draft", "--dir", str(self.project_dir), "--episode", "1", "--file", str(path))

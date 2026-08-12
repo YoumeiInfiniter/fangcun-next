@@ -149,6 +149,13 @@ class Round1BypassBase(unittest.TestCase):
         apply_revision_ids: list[str] | None = None,
         manual_edit: bool = False,
     ) -> str:
+        # v0.3.6 新增“必保留语义覆盖”守卫后，合成精简草稿必须包含集纲
+        # must_keep 节拍（系统登场 / 雷击错绑）才能通过 save-draft。
+        # 追加节拍只让夹具符合新契约，不改变各用例断言的绕过/哈希/证据语义。
+        if "系统登场" not in text:
+            text += "△系统登场。\n"
+        if "雷击错绑" not in text:
+            text += "△雷击错绑。\n"
         path = self.root / f"draft_ep{episode}.txt"
         path.write_text(text, encoding="utf-8")
         argv = ["save-draft", "--dir", str(self.project_dir), "--episode", str(episode), "--file", str(path)]

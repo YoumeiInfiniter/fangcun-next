@@ -321,7 +321,8 @@ class V030AgentFirstTests(unittest.TestCase):
         )
         run_cli("get-episode-context", "--dir", str(self.project), "--episode", "1")
         long_lines = "\n".join(f"叶聆：这是第{idx}句很长很长很长很长很长很长很长很长很长的台词。" for idx in range(30))
-        script = f"第1集：第一集\n\n1-1 家 夜 内\n人物：叶聆、996\n\n△动作。\n{long_lines}\n"
+        # v0.3.6 语义覆盖守卫要求草稿包含 must_keep 节拍“事件一开始”。
+        script = f"第1集：第一集\n\n1-1 家 夜 内\n人物：叶聆、996\n\n△事件一开始。\n{long_lines}\n"
         draft = self.root / "draft.txt"
         draft.write_text(script, encoding="utf-8")
         run_cli("save-draft", "--dir", str(self.project), "--episode", "1", "--file", str(draft))
@@ -368,7 +369,7 @@ class V030AgentFirstTests(unittest.TestCase):
         self._setup_two_events()
         self._save_outline(base_outline(), capacity=None)
         run_cli("get-episode-context", "--dir", str(self.project), "--episode", "1")
-        script = "第1集：第一集\n\n1-1 家 夜 内\n人物：叶聆、996\n\n△叶聆和996争执。\n叶聆：什么动静？\n996：绑错了。\n"
+        script = "第1集：第一集\n\n1-1 家 夜 内\n人物：叶聆、996\n\n△事件一开始。\n△叶聆和996争执。\n叶聆：什么动静？\n996：绑错了。\n"
         draft = self.root / "draft.txt"
         draft.write_text(script, encoding="utf-8")
         run_cli("save-draft", "--dir", str(self.project), "--episode", "1", "--file", str(draft))
@@ -477,14 +478,14 @@ class V030AgentFirstTests(unittest.TestCase):
         self._save_outline(base_outline(), capacity=None)
         run_cli("get-episode-context", "--dir", str(self.project), "--episode", "1")
         standard = self.root / "standard.txt"
-        standard.write_text("第1集：第一集\n\n1-1 家 夜 内\n人物：叶聆\n\n△动作。\n叶聆：标准稿。\n", encoding="utf-8")
+        standard.write_text("第1集：第一集\n\n1-1 家 夜 内\n人物：叶聆\n\n△事件一开始。\n△动作。\n叶聆：标准稿。\n", encoding="utf-8")
         run_cli("save-draft", "--dir", str(self.project), "--episode", "1", "--file", str(standard))
         standard_meta = draft_meta_record(self.project, 1, active_version_id(self.project, "script_draft", 1))
         self.assertEqual(standard_meta["workflow_mode"], "standard")
         self.assertEqual(standard_meta["semantic_review_status"], "pending_review")
 
         quick = self.root / "quick.txt"
-        quick.write_text("第1集：第一集\n\n1-1 家 夜 内\n人物：叶聆\n\n△动作。\n叶聆：快速稿。\n", encoding="utf-8")
+        quick.write_text("第1集：第一集\n\n1-1 家 夜 内\n人物：叶聆\n\n△事件一开始。\n△动作。\n叶聆：快速稿。\n", encoding="utf-8")
         run_cli(
             "save-draft",
             "--dir",
@@ -508,7 +509,7 @@ class V030AgentFirstTests(unittest.TestCase):
         self._save_outline(base_outline(), capacity=None)
         run_cli("get-episode-context", "--dir", str(self.project), "--episode", "1")
         script = self.root / "draft.txt"
-        script.write_text("第1集：第一集\n\n1-1 家 夜 内\n人物：叶聆\n\n△动作。\n叶聆：默认稿。\n", encoding="utf-8")
+        script.write_text("第1集：第一集\n\n1-1 家 夜 内\n人物：叶聆\n\n△事件一开始。\n△动作。\n叶聆：默认稿。\n", encoding="utf-8")
         with mock.patch.dict(os.environ, {"FANGCUN_API_KEY": "sk-fake"}), mock.patch("requests.post") as post:
             run_cli("save-draft", "--dir", str(self.project), "--episode", "1", "--file", str(script))
             run_cli("review", "--dir", str(self.project), "--episode", "1")
