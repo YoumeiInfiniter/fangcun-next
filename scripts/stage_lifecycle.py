@@ -100,6 +100,17 @@ def _record_is_stale(project_dir: Path, record: dict) -> list[str]:
                 f"上游 {binding.get('kind')} 已从 {binding.get('version')} 变化为 {current['version']}"
                 f"（content_hash 不同）"
             )
+    plan_binding = meta.get("capacity_plan_binding")
+    if plan_binding:
+        current_plan = resolve_active(project_dir, "capacity_plan")
+        if not current_plan:
+            problems.append("capacity_plan 已不存在")
+        else:
+            current_record = current_plan.get("record", {})
+            if plan_binding.get("content_hash") and current_record.get("content_hash") != plan_binding.get("content_hash"):
+                problems.append("capacity_plan 已变化")
+            elif plan_binding.get("version") and current_plan.get("version") != plan_binding.get("version"):
+                problems.append("capacity_plan 版本已变化")
     return problems
 
 
@@ -154,6 +165,10 @@ def build_stage_context(project_dir: Path, stage: str, *, save: bool = True) -> 
         item = _binding(project_dir, kind)
         if item:
             bindings.append(item)
+    if stage == "episode_outline":
+        plan_binding = _binding(project_dir, "capacity_plan")
+        if plan_binding:
+            bindings.append(plan_binding)
     for upstream_stage in CREATIVE_UPSTREAMS[stage]:
         item = _binding(project_dir, STAGE_KINDS[upstream_stage], required=True)
         if item:
@@ -338,10 +353,17 @@ def _stage_review_ok(project_dir: Path, stage: str, version: str, record: dict) 
     )
 
 
-def _capacity_gate_for(record: dict, capacity_decision: str | None) -> tuple[dict, str]:
+def _capacity_gate_for(
+    project_dir: Path,
+    record: dict,
+    capacity_decision: str | None,
+    capacity_plan_version: str | None = None,
+) -> tuple[dict, str, dict | None]:
     """集纲容量门禁（P2-1 共用）：校验并推导容量决定，不写入。
 
-    返回 (aggregate, decision)；medium/high 风险且未提供合法决定时抛错。
+    返回 (aggregate, legacy_decision, capacity_plan)；medium/high 风险必须
+    绑定当前容量预估与集纲哈希一致的已确认计划。旧项目仍可读取旧决定记录，
+    但新项目的旧 ``accept_current_plan`` 不再是放行路径。
     confirm_stage 与 confirm_stages 预检共用同一逻辑，避免两处规则漂移，
     并让批量确认在预检阶段就整体拒绝，不产生"前面已确认、后面失败"的部分提交。
     """
@@ -349,17 +371,39 @@ def _capacity_gate_for(record: dict, capacity_decision: str | None) -> tuple[dic
     reports = meta.get("density_reports", []) or []
     aggregate = aggregate_density_reports(reports)
     decision = str(capacity_decision or "").strip()
+    plan = None
     if aggregate["high_episodes"] or aggregate["medium_episodes"]:
-        if decision not in ("accept_current_plan", "changes_recorded"):
+        from .capacity_plan import load_active_capacity_plan
+
+        try:
+            plan = load_active_capacity_plan(project_dir, require_approved=True)
+        except ValueError as exc:
+            raise ValueError(f"容量计划校验失败：{exc}") from exc
+        runtime_version = load_manifest(project_dir).get("runtime_version")
+        if plan:
+            outline_hash = record.get("content_hash")
+            if plan.get("outline_hash") != outline_hash:
+                raise ValueError("capacity_plan 未绑定当前 episode_outline content_hash")
+            if capacity_plan_version and capacity_plan_version != plan.get("plan_version"):
+                # The artifact version is authoritative when a plan was loaded
+                # from disk and did not carry its derived plan_version field.
+                active_plan_version = resolve_active(project_dir, "capacity_plan")
+                if not active_plan_version or capacity_plan_version != active_plan_version.get("version"):
+                    raise ValueError("提供的 capacity_plan_version 不是当前活动计划")
+        elif (
+            (runtime_version != "0.3.7" or not meta.get("outline_contract_version"))
+            and decision in ("accept_current_plan", "changes_recorded")
+        ):
+            # Read-only compatibility for projects created before v0.3.7.
+            return aggregate, decision, None
+        else:
             raise ValueError(
-                "集纲存在 medium/high 容量风险，编剧必须一次性确认或记录调整。\n"
-                + aggregate["summary"]
-                + "\n请使用 --capacity-decision accept_current_plan（接受当前规划）"
-                "或 changes_recorded（已记录调整后重新保存集纲）。"
+                "集纲存在 medium/high 容量风险，但未绑定已确认 capacity_plan；"
+                "请先选择具体集数、时长和事件取舍后保存计划。"
             )
     else:
         decision = "not_applicable"
-    return aggregate, decision
+    return aggregate, decision, plan
 
 
 def confirm_stage(
@@ -371,6 +415,7 @@ def confirm_stage(
     confirmation_ref: str,
     review_override_reason: str | None = None,
     capacity_decision: str | None = None,
+    capacity_plan_version: str | None = None,
 ) -> dict:
     if stage not in STAGE_KINDS:
         raise ValueError(f"未知阶段：{stage}")
@@ -405,12 +450,30 @@ def confirm_stage(
         raise ValueError("缺少与当前版本同源绑定且通过的阶段审核；如人工完整审核，请提供 override reason")
     capacity_payload = None
     if stage == "episode_outline":
-        aggregate, decision = _capacity_gate_for(record, capacity_decision)
+        aggregate, decision, capacity_plan = _capacity_gate_for(
+            project_dir, record, capacity_decision, capacity_plan_version
+        )
         capacity_payload = {
             "aggregate": aggregate,
             "decision": decision,
             "outline_hash": record.get("content_hash", ""),
+            "capacity_plan": capacity_plan,
         }
+        if capacity_plan:
+            active_plan = resolve_active(project_dir, "capacity_plan")
+            update_artifact_meta(
+                project_dir,
+                kind,
+                version,
+                update={
+                    "capacity_plan_binding": {
+                        "version": (active_plan or {}).get("version") or capacity_plan.get("plan_version"),
+                        "content_hash": (active_plan or {}).get("record", {}).get("content_hash"),
+                        "forecast_hash": capacity_plan.get("forecast_hash"),
+                        "outline_hash": capacity_plan.get("outline_hash"),
+                    }
+                },
+            )
     result = update_artifact_status(
         project_dir,
         kind,
@@ -423,16 +486,19 @@ def confirm_stage(
         ),
     )
     if stage == "episode_outline":
-        decision_record = record_capacity_decision(
-            project_dir,
-            outline_version=version,
-            outline_hash=capacity_payload["outline_hash"],
-            decision=capacity_payload["decision"],
-            operator=operator,
-            confirmation_ref=confirmation_ref,
-            aggregate=capacity_payload["aggregate"],
-        )
-        result["capacity_decision"] = decision_record
+        if capacity_payload.get("capacity_plan"):
+            result["capacity_plan"] = capacity_payload["capacity_plan"]
+        else:
+            decision_record = record_capacity_decision(
+                project_dir,
+                outline_version=version,
+                outline_hash=capacity_payload["outline_hash"],
+                decision=capacity_payload["decision"],
+                operator=operator,
+                confirmation_ref=confirmation_ref,
+                aggregate=capacity_payload["aggregate"],
+            )
+            result["capacity_decision"] = decision_record
     return result
 
 
@@ -444,6 +510,7 @@ def confirm_stages(
     confirmation_ref: str,
     review_override_reason: str | None = None,
     capacity_decisions: dict | None = None,
+    capacity_plan_versions: dict | None = None,
 ) -> dict:
     """P1：多阶段重绑合并为一次批量确认。
 
@@ -456,6 +523,7 @@ def confirm_stages(
     if unknown:
         raise ValueError(f"未知阶段：{', '.join(unknown)}")
     capacity_decisions = capacity_decisions or {}
+    capacity_plan_versions = capacity_plan_versions or {}
     if not str(operator or "").strip():
         raise ValueError("确认阶段必须记录实际确认人 operator")
     if not str(confirmation_ref or "").strip():
@@ -482,7 +550,12 @@ def confirm_stages(
         if stage == "episode_outline":
             # P2-1：容量门禁并入预检——缺/非法容量决定在预检阶段整体拒绝，
             # 不会在确认循环中途失败留下"前面已确认、后面失败"的部分提交。
-            _capacity_gate_for(record, capacity_decisions.get(stage))
+            _capacity_gate_for(
+                project_dir,
+                record,
+                capacity_decisions.get(stage),
+                capacity_plan_versions.get(stage),
+            )
         preflight.append((stage, resolved["version"], record))
     results = []
     for stage, version, _record in preflight:
@@ -495,6 +568,7 @@ def confirm_stages(
                 confirmation_ref=confirmation_ref,
                 review_override_reason=review_override_reason,
                 capacity_decision=capacity_decisions.get(stage),
+                capacity_plan_version=capacity_plan_versions.get(stage),
             )
         )
     return {"stages": results, "carried_forward_skipped": len(stages) - len(preflight)}

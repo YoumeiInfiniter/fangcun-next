@@ -142,17 +142,10 @@ class Round3RewriteProvenanceTests(Round1BypassBase):
 
         ticket = latest_issued_ticket(self.project_dir, 1)
         _run("cancel-rewrite-ticket", "--dir", str(self.project_dir), "--ticket-id", ticket["ticket_id"], "--reason", "writer decided manual")
-        path = self.root / "manual.txt"
-        path.write_text(
+        self._draft(
+            1,
             "第1集：第1集\n\n1-1 家 夜 内\n人物：叶聆、996\n\n△人工动作。\n叶聆：什么动静？\n996：人工台词。\n",
-            encoding="utf-8",
-        )
-        _run(
-            "save-draft",
-            "--dir", str(self.project_dir),
-            "--episode", "1",
-            "--file", str(path),
-            "--context-hash", binding["meta"]["context_hash"],
+            context_hash=binding["meta"]["context_hash"],
         )
         version = active_version_id(self.project_dir, "script_draft", 1)
         meta = draft_meta_record(self.project_dir, 1, version)

@@ -214,6 +214,26 @@ class V030AgentFirstTests(unittest.TestCase):
             expect=1,
         )
         self.assertIn("容量风险", fail_out)
+        run_cli("generate-capacity-plan", "--dir", str(self.project))
+        plan_options_path = self.project / "state" / "capacity_plan_options.json"
+        plan_options = json.loads(plan_options_path.read_text(encoding="utf-8"))
+        self.assertGreaterEqual(len(plan_options["options"]), 3)
+        run_cli(
+            "save-capacity-plan",
+            "--dir",
+            str(self.project),
+            "--plan-json",
+            str(plan_options_path),
+            "--option-id",
+            "quality_first_mainline",
+            "--operator",
+            "v030-writer",
+            "--confirmation-ref",
+            "v030-capacity-message",
+        )
+        capacity_plan_version = json.loads(
+            (self.project / "state" / "active_versions.json").read_text(encoding="utf-8")
+        )["capacity_plan"]["version"]
         run_cli(
             "confirm-stage",
             "--dir",
@@ -228,22 +248,19 @@ class V030AgentFirstTests(unittest.TestCase):
             "v030-message",
             "--override-reason",
             "synthetic fixture reviewed",
-            "--capacity-decision",
-            "accept_current_plan",
+            "--capacity-plan-version",
+            capacity_plan_version,
         )
         run_cli("get-episode-context", "--dir", str(self.project), "--episode", "1")
         from scripts.context_builder import current_context_path
 
         context = json.loads(current_context_path(self.project, 1).read_text(encoding="utf-8"))
         self.assertEqual(context["advisory_timing"]["density_report"]["pressure"], "high")
-        from scripts.stage_lifecycle import capacity_decision_for
+        from scripts.capacity_plan import load_active_capacity_plan
 
-        decision = capacity_decision_for(
-            self.project,
-            outline_version=version,
-            outline_hash=record["content_hash"],
-        )
-        self.assertEqual(decision["decision"], "accept_current_plan")
+        plan = load_active_capacity_plan(self.project, require_approved=True)
+        self.assertEqual(plan["status"], "approved")
+        self.assertEqual(plan["outline_hash"], record["content_hash"])
 
     def test_density_aggregate_enters_ai_stage_review_bundle(self):
         from scripts.stage_lifecycle import build_stage_context, confirm_stage, save_stage_artifact
@@ -368,7 +385,7 @@ class V030AgentFirstTests(unittest.TestCase):
         self._setup_two_events()
         self._save_outline(base_outline(), capacity=None)
         run_cli("get-episode-context", "--dir", str(self.project), "--episode", "1")
-        script = "第1集：第一集\n\n1-1 家 夜 内\n人物：叶聆、996\n\n△叶聆和996争执。\n叶聆：什么动静？\n996：绑错了。\n"
+        script = "第1集：第一集\n\n1-1 家 夜 内\n人物：叶聆、996\n\n△事件一开始。\n△叶聆和996争执。\n叶聆：什么动静？\n996：绑错了。\n"
         draft = self.root / "draft.txt"
         draft.write_text(script, encoding="utf-8")
         run_cli("save-draft", "--dir", str(self.project), "--episode", "1", "--file", str(draft))
@@ -477,14 +494,14 @@ class V030AgentFirstTests(unittest.TestCase):
         self._save_outline(base_outline(), capacity=None)
         run_cli("get-episode-context", "--dir", str(self.project), "--episode", "1")
         standard = self.root / "standard.txt"
-        standard.write_text("第1集：第一集\n\n1-1 家 夜 内\n人物：叶聆\n\n△动作。\n叶聆：标准稿。\n", encoding="utf-8")
+        standard.write_text("第1集：第一集\n\n1-1 家 夜 内\n人物：叶聆\n\n△事件一开始。\n△动作。\n叶聆：标准稿。\n", encoding="utf-8")
         run_cli("save-draft", "--dir", str(self.project), "--episode", "1", "--file", str(standard))
         standard_meta = draft_meta_record(self.project, 1, active_version_id(self.project, "script_draft", 1))
         self.assertEqual(standard_meta["workflow_mode"], "standard")
         self.assertEqual(standard_meta["semantic_review_status"], "pending_review")
 
         quick = self.root / "quick.txt"
-        quick.write_text("第1集：第一集\n\n1-1 家 夜 内\n人物：叶聆\n\n△动作。\n叶聆：快速稿。\n", encoding="utf-8")
+        quick.write_text("第1集：第一集\n\n1-1 家 夜 内\n人物：叶聆\n\n△事件一开始。\n△动作。\n叶聆：快速稿。\n", encoding="utf-8")
         run_cli(
             "save-draft",
             "--dir",
@@ -508,7 +525,7 @@ class V030AgentFirstTests(unittest.TestCase):
         self._save_outline(base_outline(), capacity=None)
         run_cli("get-episode-context", "--dir", str(self.project), "--episode", "1")
         script = self.root / "draft.txt"
-        script.write_text("第1集：第一集\n\n1-1 家 夜 内\n人物：叶聆\n\n△动作。\n叶聆：默认稿。\n", encoding="utf-8")
+        script.write_text("第1集：第一集\n\n1-1 家 夜 内\n人物：叶聆\n\n△事件一开始。\n△动作。\n叶聆：默认稿。\n", encoding="utf-8")
         with mock.patch.dict(os.environ, {"FANGCUN_API_KEY": "sk-fake"}), mock.patch("requests.post") as post:
             run_cli("save-draft", "--dir", str(self.project), "--episode", "1", "--file", str(script))
             run_cli("review", "--dir", str(self.project), "--episode", "1")

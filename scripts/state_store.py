@@ -44,6 +44,7 @@ class ArtifactStateError(RuntimeError):
 def _default_manifest(project_id: str) -> dict:
     return {
         "schema_version": 1,
+        "runtime_version": "0.3.7",
         "project_id": project_id,
         "project_instance_id": uuid.uuid4().hex,
         "created_at": now_iso(),

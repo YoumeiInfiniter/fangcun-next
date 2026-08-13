@@ -536,7 +536,9 @@ Writer 一次，标记为 `unreviewed_draft`，不得标记已审核或更新连
 
 ### 9.7 剧本阶段
 
-剧本 Writer 只能执行当前 `episode_contract`，不得重新设计全剧。
+剧本 Writer 只能执行当前不可变 `episode_context` 派生的
+`episode_execution_brief`，不得重新设计全剧；Reviewer 和 Rewriter 可在同一快照
+中读取完整 `episode_contract` 做核对。
 
 Writer 必须：
 
@@ -1004,9 +1006,11 @@ Writer 在内部执行以下步骤，但不得把过程写进最终剧本：
 单集局部容量报告绑定活动集纲版本和内容哈希，统计本集事件最低/理想时长，
 对比本集建议区间，输出 `low/medium/high`、置信度、计算依据和 `advisory_only`。
 报告进入集纲版本元数据、可读 Markdown、集纲审核摘要、`episode_context`、
-Writer/Reviewer Prompt。medium/high 由编剧一次性 `accept_current_plan` 或
-`changes_recorded` 决定；无风险时系统记录 `not_applicable`。接受当前规划是合法
-选择，不构成硬门禁，也不自动回退上游。
+Writer/Reviewer Prompt。新项目出现 medium/high 时，编剧必须从至少三种可执行
+`capacity_plan` 中选择具体集数、时长窗口和事件取舍；计划同时绑定当前
+`capacity_forecast` 与 `episode_outline` 的版本/哈希后，才可确认集纲。无风险时
+系统记录 `not_applicable`。历史项目的旧容量决定保持可读，但不会转换为新的
+`capacity_plan`，也不会成为新项目的隐式放行路径；时长仍是预期，不自动回退上游。
 
 ### 15.4 输出
 

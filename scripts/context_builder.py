@@ -20,9 +20,13 @@ from .state_store import (
     load_config,
     resolve_active,
     writer_overrides,
+    load_manifest,
 )
 from .prompt_router import select_craft_modules
 from .stage_lifecycle import episode_density_report
+from .capacity_plan import capacity_plan_for
+from .execution_brief import build_episode_execution_brief
+from .batch_context import provisional_batch_context
 
 
 class ContextIncompleteError(ValueError):
@@ -200,6 +204,43 @@ def build_episode_context(
         ),
     )
 
+    outline_resolved = resolve_active(project_dir, "episode_outline")
+    outline_hash = (outline_resolved or {}).get("record", {}).get("content_hash")
+    capacity_plan = capacity_plan_for(project_dir, outline_hash=outline_hash)
+    runtime_version = load_manifest(project_dir).get("runtime_version")
+    outline_record_meta = (outline_resolved or {}).get("record", {}).get("meta") or {}
+    legacy_outline = (
+        not outline_record_meta.get("outline_contract_version")
+        and not outline_record_meta.get("stage_context_hash")
+        and not outline_record_meta.get("capacity_plan_binding")
+    )
+    if density_report.get("pressure") in ("medium", "high") and runtime_version == "0.3.7" and not legacy_outline:
+        if not capacity_plan or capacity_plan.get("status") != "approved":
+            raise ContextIncompleteError(
+                [
+                    "当前集纲存在 medium/high 容量风险，但没有绑定当前 forecast/outline hash 的已确认 capacity_plan；"
+                    "先生成方案并由编剧选择具体集数、时长与事件取舍。"
+                ]
+            )
+
+    provisional = provisional_batch_context(project_dir, episode)
+    if provisional and provisional.get("invalidated_previous_episodes"):
+        stale = provisional["invalidated_previous_episodes"]
+        labels = ", ".join(f"EP{int(item.get('episode', 0)):03d}" for item in stale)
+        raise ContextIncompleteError(
+            [
+                f"当前要继续 EP{episode:03d}，但同批前集 {labels} 仍为 stale/unusable；"
+                "请先重新生成并审核这些前集，再重新获取当前集上下文。"
+            ]
+        )
+    execution_brief = build_episode_execution_brief(
+        outline,
+        evidence,
+        continuity,
+        capacity_plan,
+        provisional,
+    )
+
     advisory = {
         "minimum_seconds": config.get("minimum_episode_seconds", 0),
         "preferred_seconds": config.get("preferred_episode_seconds"),
@@ -230,8 +271,15 @@ def build_episode_context(
         "selected_craft_modules": craft_modules,
         "format_profile": config.get("script_format", "default-cn"),
         "advisory_timing": advisory,
+        "capacity_plan": capacity_plan,
+        "provisional_batch_context": provisional,
+        "episode_execution_brief": execution_brief,
     }
     context = {**body, "context_hash": stable_hash(body)}
+    # The nested brief is derived from this context.  Its own hash is stable
+    # over the brief fields, while this binding makes the relationship
+    # explicit without creating a circular context hash.
+    execution_brief["context_hash"] = context["context_hash"]
     context["role"] = role
     context["completeness"] = {
         "problems": [],
@@ -273,6 +321,11 @@ def verify_context_hash(context: dict) -> tuple[bool, str]:
         for k, v in context.items()
         if k not in ("context_hash", "context_file", "completeness", "role")
     }
+    brief = body.get("episode_execution_brief")
+    if isinstance(brief, dict) and "context_hash" in brief:
+        brief = dict(brief)
+        brief.pop("context_hash", None)
+        body["episode_execution_brief"] = brief
     actual = stable_hash(body)
     return actual == expected, expected
 

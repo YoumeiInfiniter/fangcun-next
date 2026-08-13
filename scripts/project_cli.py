@@ -265,6 +265,94 @@ def cmd_estimate_capacity(args) -> int:
     return 0
 
 
+def cmd_generate_capacity_plan(args) -> int:
+    project_dir = _project_dir(args)
+    from .capacity_plan import suggest_capacity_plans
+
+    if not active_artifact_path(project_dir, "capacity_forecast"):
+        from .capacity_estimator import save_forecast
+
+        save_forecast(project_dir, source="system")
+    proposal = suggest_capacity_plans(project_dir)
+    path = project_dir / "state" / "capacity_plan_options.json"
+    atomic_write_json(path, proposal)
+    print(f"capacity_plan 方案已生成（尚未确认）：{path}")
+    print(json.dumps(proposal, ensure_ascii=False, indent=2))
+    print("下一步：由编剧选择一个 option，使用 save-capacity-plan 保存并提供 confirmation_ref。")
+    return 0
+
+
+def cmd_save_capacity_plan(args) -> int:
+    project_dir = _project_dir(args)
+    from .capacity_plan import save_capacity_plan
+
+    data = _load_json_file(Path(args.plan_json), "capacity_plan JSON")
+    plan = data
+    if isinstance(data, dict) and isinstance(data.get("options"), list):
+        option_id = getattr(args, "option_id", None)
+        selected = next(
+            (item for item in data["options"] if isinstance(item, dict) and item.get("option_id") == option_id),
+            None,
+        ) if option_id else None
+        if selected is None and len(data["options"]) == 1:
+            selected = data["options"][0]
+        if selected is None:
+            raise CliError("方案文件包含多个 options，请提供 --option-id 选择一个具体容量计划")
+        plan = dict(selected)
+        for key in ("forecast_version", "forecast_hash", "outline_version", "outline_hash"):
+            if data.get(key) is not None:
+                plan.setdefault(key, data[key])
+    if not isinstance(plan, dict):
+        raise CliError("capacity_plan JSON 必须是对象")
+    result = save_capacity_plan(
+        project_dir,
+        plan,
+        source="writer",
+        operator=args.operator,
+        confirmation_ref=args.confirmation_ref,
+    )
+    print(f"capacity_plan 已保存：{result['path']}（{result['version']}）")
+    print(json.dumps(plan, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_start_batch(args) -> int:
+    project_dir = _project_dir(args)
+    from .batch_context import start_provisional_batch
+
+    batch = start_provisional_batch(
+        project_dir,
+        start_episode=args.start_episode,
+        size=args.size,
+        review_isolation=args.review_isolation,
+    )
+    print(json.dumps(batch, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_batch_status(args) -> int:
+    project_dir = _project_dir(args)
+    from .batch_context import batch_status
+
+    batch = batch_status(project_dir)
+    print(json.dumps(batch or {"status": "none"}, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_confirm_batch(args) -> int:
+    project_dir = _project_dir(args)
+    from .batch_context import confirm_provisional_batch
+
+    batch = confirm_provisional_batch(
+        project_dir,
+        batch_id=args.batch_id,
+        operator=args.operator,
+        confirmation_ref=args.confirmation_ref,
+    )
+    print(json.dumps(batch, ensure_ascii=False, indent=2))
+    return 0
+
+
 def _stage_bundle(project_dir: Path, role: str, stage_context: dict, extra: str = "") -> Path:
     from .prompt_router import render_prompt_bundle
 
@@ -672,6 +760,7 @@ def cmd_save_episode_outline(args) -> int:
     ]
     outline_sync_id = sha256_text(canonical_json({"episodes": ordered}))
     shared_meta = {
+        "outline_contract_version": "0.3.7",
         "merge_report": merge_report,
         "outline_sync_id": outline_sync_id,
         "density_reports": density_reports,
@@ -796,86 +885,6 @@ def _print_pending_revisions(project_dir: Path, episode: int) -> None:
             print(f"  - {record.get('revision_id')}：{str(record.get('instruction'))[:60]}")
         print("  继续创作前请先 approve-revision / reject-revision 处理。")
 
-
-
-def _contract_semantic_coverage_errors(draft_text: str, context: dict) -> list[str]:
-    """Best-effort deterministic guardrail for must-keep semantic coverage.
-
-    Format validators cannot know whether a Writer silently compressed away a
-    required story beat.  This check is intentionally conservative: it extracts
-    short obligations from the current episode contract (must_keep and
-    required_story_beats), then verifies that their key Chinese characters are
-    present in the draft.  It does not judge literary quality; it blocks only
-    obvious omissions such as a contract saying “救人变人” while the draft never
-    mentions rescue/death/transformation.
-    """
-    import re
-
-    outline = (context or {}).get("episode_outline") or {}
-    if not isinstance(outline, dict):
-        return []
-
-    raw_items: list[str] = []
-    for item in outline.get("must_keep") or []:
-        if isinstance(item, dict):
-            value = item.get("text")
-        else:
-            value = item
-        if value:
-            raw_items.append(str(value))
-    for beat in outline.get("required_story_beats") or []:
-        if isinstance(beat, dict) and beat.get("text"):
-            raw_items.append(str(beat.get("text")))
-
-    def norm(value: str) -> str:
-        return re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]", "", str(value)).lower()
-
-    script_norm = norm(draft_text)
-    # High-frequency glue characters.  Keep concrete nouns/verbs such as 狗、屎、救、变、主人.
-    stop_chars = set("的了和与及在把被为是这那一个人本集核心事件目标推进制造结尾钩子误会")
-    obligations: list[str] = []
-    for raw in raw_items:
-        # Split explicit list punctuation; also split arrows, slashes and semicolons.
-        parts = re.split(r"[、，,；;；/|→]+", raw)
-        for part in parts:
-            part = part.strip()
-            if len(norm(part)) >= 2:
-                obligations.append(part)
-
-    errors: list[str] = []
-    seen: set[str] = set()
-    for obligation in obligations:
-        n = norm(obligation)
-        if not n or n in seen:
-            continue
-        seen.add(n)
-        if n in script_norm:
-            continue
-        # Domain-neutral enough compound handling: some required beats are compressed labels
-        # whose concrete screenplay expression uses related action words rather than the
-        # exact label.  Keep this small and explicit so it catches omissions without
-        # pretending to understand arbitrary prose.
-        if "救人" in n or "变人" in n:
-            rescue_ok = any(token in script_norm for token in ("救", "落水", "叼住", "冲进水", "往岸边游"))
-            transform_ok = any(token in script_norm for token in ("变成人", "成人", "现在是人", "绑定"))
-            if rescue_ok and transform_ok:
-                continue
-        key_chars = []
-        for ch in n:
-            if ch in stop_chars:
-                continue
-            if ch not in key_chars:
-                key_chars.append(ch)
-        # Very short or fully generic obligations are not useful deterministic checks.
-        if len(key_chars) < 2:
-            continue
-        hits = sum(1 for ch in key_chars if ch in script_norm)
-        ratio = hits / max(1, len(key_chars))
-        if hits >= 2 and ratio >= 0.65:
-            continue
-        errors.append(f"必保留语义疑似未覆盖：{obligation}（命中 {hits}/{len(key_chars)} 个关键字）")
-    return errors
-
 def cmd_save_draft(args) -> int:
     project_dir = _project_dir(args)
     from .script_validator import validate_script
@@ -905,10 +914,26 @@ def cmd_save_draft(args) -> int:
     else:
         context = _load_context_snapshot(project_dir, args.episode)
         context_hash = context["context_hash"]
-    coverage_errors = _contract_semantic_coverage_errors(text, context)
-    if coverage_errors:
-        raise CliError("草稿必保留语义未覆盖：\n" + "\n".join(f"- {e}" for e in coverage_errors[:20]))
     draft_hash = sha256_text(text)
+    from .draft_quality import compute_draft_quality
+
+    # Run all deterministic hard gates before consuming a rewrite ticket or
+    # creating an immutable draft version.  Semantic coverage remains a
+    # Reviewer responsibility; this step only checks exact quotes, format,
+    # structural anomalies and planning-label leakage.
+    quality_preview = compute_draft_quality(
+        text,
+        context,
+        draft_version="v999",
+        draft_hash=draft_hash,
+        config=config,
+        format_report=report,
+    )
+    if quality_preview.get("hard_errors"):
+        raise CliError(
+            "草稿确定性质量门禁未通过：\n"
+            + "\n".join(f"- {item.get('message', item)}" for item in quality_preview["hard_errors"][:20])
+        )
     ticket_id = getattr(args, "rewrite_ticket", None) or None
     origin = "manual"
     ticket_bindings = {}
@@ -1026,6 +1051,42 @@ def cmd_save_draft(args) -> int:
             "draft_version": result["version"],
         },
     )
+    quality = compute_draft_quality(
+        text,
+        context_snapshot,
+        draft_version=result["version"],
+        draft_hash=draft_hash,
+        config=config,
+        format_report=report,
+        draft_metrics=metrics,
+    )
+    ensure_valid(quality, "draft-quality.schema.json")
+    quality_result = commit_artifact(
+        project_dir,
+        "draft_quality",
+        content=quality,
+        episode=args.episode,
+        source="system",
+        status="approved",
+        ext="json",
+        meta={
+            "context_hash": context_hash,
+            "draft_hash": draft_hash,
+            "draft_version": result["version"],
+            "ruleset_version": quality["ruleset_version"],
+            "quality_config_hash": quality["quality_config_hash"],
+        },
+    )
+    from .batch_context import record_provisional_draft
+
+    record_provisional_draft(
+        project_dir,
+        episode=args.episode,
+        draft_version=result["version"],
+        draft_hash=draft_hash,
+        draft_text=text,
+        context_hash=context_hash,
+    )
     _print_pending_revisions(project_dir, args.episode)
     print(f"草稿已保存：{result['path']}（{result['version']}，draft_hash={draft_hash[:12]}，context_hash={context_hash[:12]}）")
     maybe_emit_sync_event(project_dir, kind="script_draft", result=result, episode=args.episode)
@@ -1033,6 +1094,7 @@ def cmd_save_draft(args) -> int:
         f"草稿指标已保存：{metrics_result['path']}"
         f"（约 {metrics['estimated_seconds']} 秒，偏差 {metrics['deviation']}，仅提示）"
     )
+    print(f"草稿质量已保存：{quality_result['path']}（hard_errors={len(quality['hard_errors'])}，risk_signals={len(quality['risk_signals'])}）")
     if workflow_mode == "quick_draft":
         print(
             "快速草稿：workflow_mode=quick_draft，未执行语义审核；"
@@ -1128,6 +1190,11 @@ def _normalize_issue_evidence(issue: dict) -> None:
 
 def _validate_issue_evidence(issue: dict, context: dict) -> list[str]:
     """All provided evidence fields must resolve to ONE consistent excerpt."""
+    if issue.get("system_gate") is True:
+        # These issues are generated from deterministic draft/contract checks;
+        # their evidence is the validated beat, dimension or quote check, not
+        # a model-selected source excerpt.
+        return []
     if issue.get("severity") != "error":
         return []
     evidence = issue.get("evidence")
@@ -1247,6 +1314,7 @@ def cmd_review(args) -> int:
             "请先重新生成与草稿一致的上下文，或从不可变快照中选择正确版本。"
         )
     from .duration_estimator import compute_draft_metrics, load_bound_draft_metrics
+    from .draft_quality import compute_draft_quality, load_bound_draft_quality
 
     try:
         draft_metrics = load_bound_draft_metrics(
@@ -1282,12 +1350,50 @@ def cmd_review(args) -> int:
                 "backfilled_by_system": True,
             },
         )
+    try:
+        draft_quality = load_bound_draft_quality(
+            project_dir,
+            args.episode,
+            draft_version,
+            draft_meta["draft_hash"],
+        )
+    except KeyError:
+        # Historical drafts remain readable.  The current runtime backfills a
+        # bound system artifact before asking a Reviewer to consume them.
+        draft_quality = compute_draft_quality(
+            draft_text,
+            context,
+            draft_version=draft_version,
+            draft_hash=draft_meta["draft_hash"],
+            config=config,
+            format_report=report,
+            draft_metrics=draft_metrics,
+        )
+        ensure_valid(draft_quality, "draft-quality.schema.json")
+        commit_artifact(
+            project_dir,
+            "draft_quality",
+            content=draft_quality,
+            episode=args.episode,
+            source="system",
+            status="approved",
+            ext="json",
+            meta={
+                "context_hash": context["context_hash"],
+                "draft_hash": draft_meta["draft_hash"],
+                "draft_version": draft_version,
+                "backfilled_by_system": True,
+            },
+        )
+    if draft_quality.get("hard_errors"):
+        raise CliError("绑定草稿存在确定性质量错误，拒绝审核：" + "; ".join(item.get("message", "") for item in draft_quality["hard_errors"]))
     review_context = {
         **context,
         "script_draft": draft_text,
         "draft_hash": draft_meta["draft_hash"],
         "draft_version": draft_version,
         "draft_metrics": draft_metrics,
+        "draft_quality": draft_quality,
     }
     bundle = render_prompt_bundle(review_context, role="reviewer", config=config)
     bundle += (
@@ -1297,6 +1403,8 @@ def cmd_review(args) -> int:
         f"draft_version: {draft_version}\n\n"
         f"## 草稿确定性时长指标（draft_metrics，系统计算，模型不得覆盖）\n"
         f"{json.dumps(draft_metrics, ensure_ascii=False, indent=2)}\n\n"
+        f"## 草稿质量信号（draft_quality，系统计算，模型不得覆盖）\n"
+        f"{json.dumps(draft_quality, ensure_ascii=False, indent=2)}\n\n"
         f"## 待审草稿\n{draft_text}\n"
     )
     path = _review_bundle_path(project_dir, args.episode)
@@ -1383,6 +1491,8 @@ def _save_review(
         raise CliError("审核报告 draft_version 与草稿版本不一致，拒绝保存")
     context = _load_context_snapshot_by_hash(project_dir, episode, expected_context_hash)
     from .duration_estimator import load_bound_draft_metrics
+    from .draft_quality import compute_draft_quality, load_bound_draft_quality
+    from .script_validator import validate_script
 
     draft_metrics = load_bound_draft_metrics(
         project_dir,
@@ -1390,6 +1500,52 @@ def _save_review(
         expected_draft_version,
         expected_draft_hash,
     )
+    try:
+        draft_quality = load_bound_draft_quality(
+            project_dir, episode, expected_draft_version, expected_draft_hash
+        )
+    except KeyError:
+        draft_path = artifact_version_path(project_dir, "script_draft", episode, expected_draft_version)
+        if not draft_path:
+            raise CliError("审核绑定草稿不存在，无法补建 draft_quality")
+        draft_text = draft_path.read_text(encoding="utf-8")
+        draft_quality = compute_draft_quality(
+            draft_text,
+            context,
+            draft_version=expected_draft_version,
+            draft_hash=expected_draft_hash,
+            config=load_config(project_dir),
+            format_report=validate_script(draft_text, expected_episode=episode),
+            draft_metrics=draft_metrics,
+        )
+        ensure_valid(draft_quality, "draft-quality.schema.json")
+        commit_artifact(
+            project_dir,
+            "draft_quality",
+            content=draft_quality,
+            episode=episode,
+            source="system",
+            status="approved",
+            ext="json",
+            meta={
+                "context_hash": expected_context_hash,
+                "draft_hash": expected_draft_hash,
+                "draft_version": expected_draft_version,
+                "backfilled_by_system": True,
+            },
+        )
+    draft_path = artifact_version_path(project_dir, "script_draft", episode, expected_draft_version)
+    draft_text = draft_path.read_text(encoding="utf-8") if draft_path else ""
+    from .review_quality import derive_review_verdict, review_gate_issues, validate_review_completeness
+
+    completeness_errors = validate_review_completeness(
+        report_data,
+        context,
+        draft_text,
+        draft_quality,
+    )
+    if completeness_errors:
+        raise CliError("审核报告完整性门禁未通过：\n" + "\n".join(f"- {e}" for e in completeness_errors))
     model_timing = report_data.get("timing_advisory")
     report_data["timing_advisory"] = {
         "estimated_seconds": draft_metrics["estimated_seconds"],
@@ -1404,7 +1560,19 @@ def _save_review(
         and model_timing.get("estimated_seconds") != draft_metrics["estimated_seconds"]
     ):
         report_data["legacy_model_estimate"] = model_timing
-    report_data["verdict"] = _derive_verdict(report_data.get("issues"))
+    # A blocked deterministic gate is a real saved review result.  This keeps
+    # the report auditable and prevents a model from bypassing it by omitting
+    # a duplicate issue from ``issues``.
+    existing_gate_keys = {
+        str(item.get("system_gate_key"))
+        for item in (report_data.get("issues") or [])
+        if isinstance(item, dict) and item.get("system_gate_key")
+    }
+    for gate_issue in review_gate_issues(report_data, context, draft_text, draft_quality):
+        if gate_issue["system_gate_key"] not in existing_gate_keys:
+            report_data.setdefault("issues", []).append(gate_issue)
+            existing_gate_keys.add(gate_issue["system_gate_key"])
+    report_data["verdict"] = derive_review_verdict(report_data, context, draft_text, draft_quality)
     ensure_valid(report_data, "review-report.schema.json")
     for issue in report_data.get("issues", []) or []:
         evidence_errors = _validate_issue_evidence(issue, context)
@@ -1426,6 +1594,9 @@ def _save_review(
             "semantic_review_status": "reviewed",
             "draft_metrics_hash": sha256_text(
                 json.dumps(draft_metrics, ensure_ascii=False, sort_keys=True)
+            ),
+            "draft_quality_hash": sha256_text(
+                json.dumps(draft_quality, ensure_ascii=False, sort_keys=True)
             ),
         },
     )
@@ -1453,6 +1624,17 @@ def _save_review(
     maybe_emit_sync_event(project_dir, kind="review_md", result=md_result, episode=episode)
     print(f"结论：{report_data.get('verdict')} | {report_data.get('summary')}")
     print(f"问题数：{len(report_data.get('issues', []))}")
+    from .batch_context import record_provisional_review
+
+    review_record = artifact_version_record(project_dir, "review", episode, result["version"]) or {}
+    record_provisional_review(
+        project_dir,
+        episode=episode,
+        review_version=result["version"],
+        review_hash=review_record.get("content_hash", result.get("content_hash", "")),
+        verdict=report_data.get("verdict", ""),
+        review_isolation="isolated",
+    )
 
 
 def _normalize_verdict(verdict: Any, issues: list[dict] | None) -> str:
@@ -1536,14 +1718,20 @@ def _normalize_review_report(data: dict) -> dict:
     return _normalize_review_report_v2(data)
 
 
-def _derive_verdict(issues: list[dict] | None) -> str:
-    """Verdict is ALWAYS derived from normalized effective issues."""
-    severities = [str(i.get("severity", "")).lower() for i in (issues or [])]
-    if "error" in severities:
-        return "blocked"
-    if "warning" in severities:
-        return "warning"
-    return "pass"
+def _derive_verdict(
+    issues: list[dict] | None,
+    *,
+    report: dict | None = None,
+    context: dict | None = None,
+    draft_text: str = "",
+    draft_quality: dict | None = None,
+) -> str:
+    """Derive from issues and, when available, all deterministic gate checks."""
+    from .review_quality import derive_review_verdict
+
+    effective_report = dict(report or {})
+    effective_report["issues"] = list(issues or [])
+    return derive_review_verdict(effective_report, context, draft_text, draft_quality)
 
 
 def _normalize_review_report_v2(data: dict) -> tuple[dict, list[str]]:
@@ -1580,16 +1768,27 @@ def _normalize_review_report_v2(data: dict) -> tuple[dict, list[str]]:
             "category": category,
             "problem": problem,
         }
-        for key in ("location", "source_evidence", "adaptation_basis", "fix", "evidence"):
+        for key in ("location", "source_evidence", "adaptation_basis", "fix", "evidence", "system_gate", "system_gate_key"):
             value = issue.get(key)
             if value not in (None, ""):
                 item[key] = value
         _normalize_issue_evidence(item)
-        if item["severity"] == "error" and item.get("evidence") is None:
+        if item["severity"] == "error" and item.get("evidence") is None and not item.get("system_gate"):
             errors.append(f"error 问题 {item['id']} 缺少 evidence")
             continue
         normalized.append(item)
     data["issues"] = normalized
+    check_fields = ("beat_checks", "dimension_checks", "risk_signal_checks", "required_quote_checks")
+    has_new_contract = bool(
+        str(data.get("review_contract_version") or "").strip()
+        or any(key in data for key in check_fields)
+    )
+    data["review_contract_version"] = str(
+        data.get("review_contract_version") or ("0.3.7" if has_new_contract else "legacy_unspecified")
+    )
+    for key in check_fields:
+        if key not in data or data.get(key) is None:
+            data[key] = []
     if model_verdict is not None:
         data["model_verdict"] = model_verdict
     data.pop("verdict", None)
@@ -1648,11 +1847,32 @@ def _validate_review_for_consumption(project_dir: Path, episode: int, review_dat
     else:
         if sha256_text(draft_path.read_text(encoding="utf-8")) != review_data.get("draft_hash"):
             errors.append("审核绑定的草稿哈希与文件不一致")
+    try:
+        from .draft_quality import load_bound_draft_quality
+        draft_quality = load_bound_draft_quality(
+            project_dir, episode, review_data.get("draft_version", ""), review_data.get("draft_hash", "")
+        )
+    except KeyError:
+        errors.append("缺少绑定 draft_quality")
+        draft_quality = None
+    draft_text = ""
+    if draft_path:
+        draft_text = draft_path.read_text(encoding="utf-8")
+        from .review_quality import derive_review_verdict, validate_review_completeness
+        errors.extend(
+            validate_review_completeness(
+                review_data,
+                context,
+                draft_text,
+                draft_quality,
+            )
+        )
     for issue in review_data.get("issues", []) or []:
         evidence_errors = _validate_issue_evidence(issue, context)
         if evidence_errors:
             errors.extend(f"issue {issue.get('id', '?')}: {e}" for e in evidence_errors)
-    derived = _derive_verdict(review_data.get("issues"))
+    from .review_quality import derive_review_verdict
+    derived = derive_review_verdict(review_data, context, draft_text, draft_quality)
     if review_data.get("verdict") != derived:
         errors.append(f"verdict {review_data.get('verdict')!r} 与 issues 推导结果 {derived!r} 不一致")
     issues = review_data.get("issues") or []
@@ -1685,6 +1905,8 @@ def cmd_rewrite(args) -> int:
     consumption_errors = _validate_review_for_consumption(project_dir, args.episode, review_data)
     if consumption_errors:
         raise CliError("审核报告消费前再验证失败，拒绝重写：\n" + "\n".join(f"- {e}" for e in consumption_errors))
+    if review_data.get("verdict") != "blocked":
+        raise CliError("只有 verdict=blocked 的审核可以签发定向重写；warning 不自动重写，请由编剧决定下一步")
     context = _load_context_snapshot_by_hash(project_dir, args.episode, review_data["context_hash"])
     draft_path = artifact_version_path(project_dir, "script_draft", args.episode, review_data["draft_version"])
     if not draft_path:
@@ -2251,6 +2473,7 @@ def cmd_confirm_stage(args) -> int:
         confirmation_ref=args.confirmation_ref,
         review_override_reason=args.override_reason,
         capacity_decision=getattr(args, "capacity_decision", None),
+        capacity_plan_version=getattr(args, "capacity_plan_version", None),
     )
     if args.stage == "episode_outline":
         md_version = active_version_id(project_dir, "episode_outline_md")
@@ -2278,8 +2501,11 @@ def cmd_confirm_stages(args) -> int:
 
     stages = [s.strip() for s in (args.stages or "").split(",") if s.strip()]
     capacity_decisions: dict[str, str] = {}
+    capacity_plan_versions: dict[str, str] = {}
     if getattr(args, "capacity_decision", None):
         capacity_decisions = {stage: args.capacity_decision for stage in stages}
+    if getattr(args, "capacity_plan_version", None):
+        capacity_plan_versions = {stage: args.capacity_plan_version for stage in stages}
     result = confirm_stages(
         project_dir,
         stages=stages,
@@ -2287,6 +2513,7 @@ def cmd_confirm_stages(args) -> int:
         confirmation_ref=args.confirmation_ref,
         review_override_reason=args.override_reason,
         capacity_decisions=capacity_decisions,
+        capacity_plan_versions=capacity_plan_versions,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
@@ -2450,6 +2677,40 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dir", required=True)
     p.set_defaults(func=cmd_estimate_capacity)
 
+    p = sub.add_parser("generate-capacity-plan", help="根据当前容量预估生成至少三种待编剧选择的可执行方案")
+    p.add_argument("--dir", required=True)
+    p.set_defaults(func=cmd_generate_capacity_plan)
+
+    p = sub.add_parser("plan-capacity", help="generate-capacity-plan 的兼容别名")
+    p.add_argument("--dir", required=True)
+    p.set_defaults(func=cmd_generate_capacity_plan)
+
+    p = sub.add_parser("save-capacity-plan", help="保存编剧明确选择并确认的容量计划")
+    p.add_argument("--dir", required=True)
+    p.add_argument("--plan-json", required=True)
+    p.add_argument("--option-id")
+    p.add_argument("--operator", required=True)
+    p.add_argument("--confirmation-ref", required=True)
+    p.set_defaults(func=cmd_save_capacity_plan)
+
+    p = sub.add_parser("start-batch", help="启动默认三集临时批次")
+    p.add_argument("--dir", required=True)
+    p.add_argument("--start-episode", type=int, required=True)
+    p.add_argument("--size", type=int, default=3)
+    p.add_argument("--review-isolation", choices=["isolated", "degraded"], default="isolated")
+    p.set_defaults(func=cmd_start_batch)
+
+    p = sub.add_parser("batch-status")
+    p.add_argument("--dir", required=True)
+    p.set_defaults(func=cmd_batch_status)
+
+    p = sub.add_parser("confirm-batch", help="编剧明确确认临时批次后再进入正式连续性")
+    p.add_argument("--dir", required=True)
+    p.add_argument("--batch-id")
+    p.add_argument("--operator", required=True)
+    p.add_argument("--confirmation-ref", required=True)
+    p.set_defaults(func=cmd_confirm_batch)
+
     p = sub.add_parser("save-adaptation")
     p.add_argument("--dir", required=True)
     p.add_argument("--file", required=True)
@@ -2503,6 +2764,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="集纲 medium/high 容量风险的一次性编剧决定（无风险时系统记录 not_applicable）",
     )
+    p.add_argument("--capacity-plan-version", default=None, help="当前已确认的 capacity_plan 版本（medium/high 必须）")
     p.set_defaults(func=cmd_confirm_stage)
 
     p = sub.add_parser("confirm-stages", help="编剧一次性确认多个已审核阶段版本（上游重绑批量确认）")
@@ -2517,6 +2779,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="集纲 medium/high 容量风险的一次性编剧决定（批量确认时对所有阶段统一生效）",
     )
+    p.add_argument("--capacity-plan-version", default=None, help="当前已确认的 capacity_plan 版本（medium/high 必须）")
     p.set_defaults(func=cmd_confirm_stages)
 
     p = sub.add_parser("locate-span", help="事件提取半自动 span 定位：给定原文片段自动算 0-based 左闭右开坐标")

@@ -1,0 +1,21 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Draft Quality",
+  "type": "object",
+  "required": ["quality_version", "context_hash", "draft_version", "draft_hash", "ruleset_version", "quality_config_hash", "hard_errors", "risk_signals", "advisory_only"],
+  "properties": {
+    "quality_version": {"type": "string", "minLength": 1},
+    "episode": {"type": "integer", "minimum": 1},
+    "context_hash": {"type": "string", "minLength": 32},
+    "draft_version": {"type": "string", "pattern": "^v[0-9]{3,}$"},
+    "draft_hash": {"type": "string", "minLength": 32},
+    "ruleset_version": {"type": "string", "minLength": 1},
+    "quality_config_hash": {"type": "string", "minLength": 32},
+    "format_ok": {"type": "boolean"},
+    "hard_errors": {"type": "array", "items": {"type": "object"}},
+    "risk_signals": {"type": "array", "items": {"type": "object"}},
+    "advisory_only": {"type": "boolean"},
+    "draft_metrics_hash": {"type": "string", "minLength": 32}
+  },
+  "additionalProperties": true
+}
