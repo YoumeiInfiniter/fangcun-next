@@ -66,6 +66,8 @@
         "properties": {
           "quote": {"type": "string", "minLength": 1},
           "source_event_id": {"type": "string", "minLength": 1},
+          "mode": {"type": "string", "enum": ["exact", "semantic", "legacy_unspecified"]},
+          "quote_mode": {"type": "string", "enum": ["exact", "semantic", "legacy_unspecified"]},
           "pair_id": {"type": "string", "minLength": 1},
           "setup": {"type": "string", "minLength": 1},
           "payoff": {"type": "string", "minLength": 1}

@@ -152,7 +152,7 @@ def _stage_prompt(role: str) -> str:
     return _read_text(mapping.get(role, "prompts/writer.md"))
 
 
-def _project_section(config: dict, outline: dict | None = None) -> str:
+def _project_section(config: dict, outline: dict | None = None, *, role: str = "writer") -> str:
     brief = config or {}
     lines = [
         "## 项目需求",
@@ -177,15 +177,28 @@ def _project_section(config: dict, outline: dict | None = None) -> str:
         if isinstance(item, dict) and item.get("id") in rule_refs
     ]
     if selected_rules:
+        if role == "writer":
+            from .execution_brief import sanitize_writer_text
+
+            selected_rules = [
+                {**item, "text": sanitize_writer_text(item.get("text", ""))}
+                for item in selected_rules
+            ]
         lines.extend(["", "当前项目已引用规则（只加载本集引用项）："])
         for item in selected_rules:
             lines.append(f"- {item.get('id')}：{item.get('text', '')}")
     return "\n".join(lines)
 
 
-def _contract_section(outline: dict) -> str:
+def _contract_section(outline: dict, context: dict | None = None, *, role: str = "writer") -> str:
     from .common import canonical_json
 
+    if role == "writer" and context and context.get("episode_execution_brief"):
+        return (
+            "## 本集执行任务（episode_execution_brief）\n"
+            "只执行以下任务；其中的容量、时长和批次信息是编排提示，不能替代编剧判断。\n"
+            + canonical_json(context["episode_execution_brief"])
+        )
     return (
         "## 当前集创作契约（episode_contract）\n"
         "你只执行本集契约，不重新设计全剧。\n"
@@ -231,6 +244,12 @@ def _continuity_section(context: dict) -> str:
         parts.append("\n### 编剧最新指令\n" + "\n".join(
             f"- {o.get('instruction', '')}" for o in context.get("writer_overrides", [])
         ))
+    provisional = context.get("provisional_batch_context")
+    if provisional:
+        parts.append(
+            "\n### 同批临时上下文（未确认，不得写入正式连续性）\n"
+            + canonical_json(provisional)
+        )
     return "\n".join(parts)
 
 
@@ -260,6 +279,21 @@ def _advisory_section(context: dict) -> str:
             "草稿确定性时长指标（系统计算，Reviewer 不得猜测或覆盖）：\n"
             + canonical_json(context["draft_metrics"])
         )
+    if context.get("draft_quality"):
+        parts.append(
+            "草稿质量信号（系统计算；Reviewer 必须逐项确认/反驳，不得自行改写数值）：\n"
+            + canonical_json(context["draft_quality"])
+        )
+    plan = context.get("capacity_plan") or {}
+    if plan:
+        action = plan.get("overflow_action") or ""
+        parts.append(
+            "容量取舍计划（已绑定编剧选择）："
+            f"{plan.get('priority_mode')} / {plan.get('coverage_mode')}；"
+            f"溢出策略 {action or '按计划执行'}。"
+        )
+        if action == "accept_overflow":
+            parts.append("该计划明确接受超出原偏好时长的内容，不再要求机械压回原区间。")
     return "\n".join(parts)
 
 
@@ -275,8 +309,8 @@ def assemble_prompt_layers(
     layers = {
         "system_base": _read_text("prompts/system_base.md"),
         "stage_role": _stage_prompt(role),
-        "project": _project_section(config, outline),
-        "contract": _contract_section(outline),
+        "project": _project_section(config, outline, role=role),
+        "contract": _contract_section(outline, context, role=role),
         "evidence": _evidence_section(context.get("source_evidence", {})),
         "continuity": _continuity_section(context),
         "advisory": _advisory_section(context),

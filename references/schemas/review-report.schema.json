@@ -71,6 +71,36 @@
       }
     },
     "writer_decision_required": {"type": "boolean"},
+    "review_contract_version": {"type": "string"},
+    "beat_checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["beat_id", "status", "causality_complete", "dialogue_chain_complete", "visible_reaction_present", "required_visuals_present", "draft_evidence", "severity", "fix"],
+        "properties": {
+          "beat_id": {"type": "string", "minLength": 1},
+          "status": {"type": "string", "enum": ["dramatized", "summarized", "missing", "not_applicable"]},
+          "causality_complete": {"type": "boolean"},
+          "dialogue_chain_complete": {"type": "boolean"},
+          "visible_reaction_present": {"type": "boolean"},
+          "required_visuals_present": {"type": "boolean"},
+          "draft_evidence": {
+            "type": "object",
+            "required": ["line_start", "line_end", "artifact_quote"],
+            "properties": {
+              "line_start": {"type": "integer", "minimum": 1},
+              "line_end": {"type": "integer", "minimum": 1},
+              "artifact_quote": {"type": "string", "minLength": 1}
+            }
+          },
+          "severity": {"type": "string", "enum": ["error", "warning", "suggestion", "none"]},
+          "fix": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "dimension_checks": {"type": ["array", "object"]},
+    "risk_signal_checks": {"type": ["array", "object"]},
     "context_hash": {"type": "string"},
     "reviewer": {"type": "string"}
   },

@@ -214,6 +214,26 @@ class V030AgentFirstTests(unittest.TestCase):
             expect=1,
         )
         self.assertIn("容量风险", fail_out)
+        run_cli("generate-capacity-plan", "--dir", str(self.project))
+        plan_options_path = self.project / "state" / "capacity_plan_options.json"
+        plan_options = json.loads(plan_options_path.read_text(encoding="utf-8"))
+        self.assertGreaterEqual(len(plan_options["options"]), 3)
+        run_cli(
+            "save-capacity-plan",
+            "--dir",
+            str(self.project),
+            "--plan-json",
+            str(plan_options_path),
+            "--option-id",
+            "quality_first_mainline",
+            "--operator",
+            "v030-writer",
+            "--confirmation-ref",
+            "v030-capacity-message",
+        )
+        capacity_plan_version = json.loads(
+            (self.project / "state" / "active_versions.json").read_text(encoding="utf-8")
+        )["capacity_plan"]["version"]
         run_cli(
             "confirm-stage",
             "--dir",
@@ -228,22 +248,19 @@ class V030AgentFirstTests(unittest.TestCase):
             "v030-message",
             "--override-reason",
             "synthetic fixture reviewed",
-            "--capacity-decision",
-            "accept_current_plan",
+            "--capacity-plan-version",
+            capacity_plan_version,
         )
         run_cli("get-episode-context", "--dir", str(self.project), "--episode", "1")
         from scripts.context_builder import current_context_path
 
         context = json.loads(current_context_path(self.project, 1).read_text(encoding="utf-8"))
         self.assertEqual(context["advisory_timing"]["density_report"]["pressure"], "high")
-        from scripts.stage_lifecycle import capacity_decision_for
+        from scripts.capacity_plan import load_active_capacity_plan
 
-        decision = capacity_decision_for(
-            self.project,
-            outline_version=version,
-            outline_hash=record["content_hash"],
-        )
-        self.assertEqual(decision["decision"], "accept_current_plan")
+        plan = load_active_capacity_plan(self.project, require_approved=True)
+        self.assertEqual(plan["status"], "approved")
+        self.assertEqual(plan["outline_hash"], record["content_hash"])
 
     def test_density_aggregate_enters_ai_stage_review_bundle(self):
         from scripts.stage_lifecycle import build_stage_context, confirm_stage, save_stage_artifact
@@ -321,8 +338,7 @@ class V030AgentFirstTests(unittest.TestCase):
         )
         run_cli("get-episode-context", "--dir", str(self.project), "--episode", "1")
         long_lines = "\n".join(f"叶聆：这是第{idx}句很长很长很长很长很长很长很长很长很长的台词。" for idx in range(30))
-        # v0.3.6 语义覆盖守卫要求草稿包含 must_keep 节拍“事件一开始”。
-        script = f"第1集：第一集\n\n1-1 家 夜 内\n人物：叶聆、996\n\n△事件一开始。\n{long_lines}\n"
+        script = f"第1集：第一集\n\n1-1 家 夜 内\n人物：叶聆、996\n\n△动作。\n{long_lines}\n"
         draft = self.root / "draft.txt"
         draft.write_text(script, encoding="utf-8")
         run_cli("save-draft", "--dir", str(self.project), "--episode", "1", "--file", str(draft))
