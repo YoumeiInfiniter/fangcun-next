@@ -111,6 +111,7 @@ def _invalidate_later(batch: dict, episode: int, reason: str) -> None:
         if item.get("draft_hash") or item.get("review_hash") or item.get("temporary_continuity"):
             item["status"] = "stale"
             item["usable"] = False
+            item["review_status"] = "stale"
             item["invalidated_by_episode"] = episode
             item["invalidation_reason"] = reason
 
@@ -131,6 +132,10 @@ def record_provisional_draft(
     previous_hash = item.get("draft_hash")
     if previous_hash and previous_hash != draft_hash:
         _invalidate_later(batch, episode, "前集草稿版本变化，后续临时上下文需要重建")
+        # A review is bound to the old draft.  Do not let it survive a local
+        # rewrite of the same episode.
+        for key in ("review_version", "review_hash", "review_verdict", "review_status", "review_isolation", "reviewed_at"):
+            item.pop(key, None)
     item.update(
         {
             "episode": episode,
@@ -150,6 +155,8 @@ def record_provisional_draft(
             "recorded_at": now_iso(),
         }
     )
+    for key in ("invalidated_by_episode", "invalidation_reason"):
+        item.pop(key, None)
     return _write_batch(project_dir, batch)
 
 
@@ -166,6 +173,8 @@ def record_provisional_review(
     if not batch or batch.get("status") != "provisional":
         return None
     item = _record(batch, episode)
+    if not item.get("draft_hash") or item.get("status") == "stale" or item.get("usable") is False:
+        raise ValueError(f"EP{episode:03d} 尚无可审核的当前草稿，不能记录临时审核")
     item.update(
         {
             "review_version": review_version,
@@ -173,6 +182,7 @@ def record_provisional_review(
             "review_verdict": verdict,
             "review_status": "unconfirmed",
             "review_isolation": review_isolation,
+            "review_draft_hash": item.get("draft_hash"),
             "unconfirmed": True,
             "reviewed_at": now_iso(),
         }
@@ -227,6 +237,12 @@ def provisional_batch_context(project_dir: Path, episode: int) -> dict | None:
         "review_isolation": batch.get("review_isolation", "isolated"),
         "previous_episodes": previous,
         "invalidated_previous_episodes": invalidated,
+        "rebuild_required": bool(invalidated),
+        "rebuild_instruction": (
+            "请先重新生成并审核被标 stale 的前集，然后再继续当前集；未重建前不得把临时内容当作连续性事实。"
+            if invalidated
+            else ""
+        ),
         "instruction": "以下内容来自同批未确认草稿/审核，只可作临时上下文，不得当作正式连续性事实。",
     }
 
@@ -248,12 +264,49 @@ def confirm_provisional_batch(
         raise ValueError("该批次已经确认或不可确认")
     if not str(operator or "").strip() or not str(confirmation_ref or "").strip():
         raise ValueError("确认临时批次必须提供 operator 和 confirmation_ref")
+    confirmation_errors: list[str] = []
+    records = batch.get("records") or {}
+    for value in (batch.get("episodes") or []):
+        episode = int(value)
+        item = records.get(str(episode))
+        if not isinstance(item, dict):
+            confirmation_errors.append(f"EP{episode:03d} 缺少临时记录")
+            continue
+        if item.get("status") == "stale" or item.get("usable") is False:
+            confirmation_errors.append(
+                f"EP{episode:03d} 仍是 stale/unusable（{item.get('invalidation_reason') or '需要重建'}）"
+            )
+        draft_version = item.get("draft_version")
+        draft_hash = item.get("draft_hash")
+        draft_record = artifact_version_record(project_dir, "script_draft", episode, draft_version) if draft_version else None
+        if not draft_record or not draft_hash or draft_record.get("content_hash") != draft_hash:
+            confirmation_errors.append(f"EP{episode:03d} 缺少与当前记录匹配的草稿，请先重建草稿")
+        review_version = item.get("review_version")
+        review_hash = item.get("review_hash")
+        review_record = artifact_version_record(project_dir, "review", episode, review_version) if review_version else None
+        if not review_record or not review_hash or review_record.get("content_hash") != review_hash:
+            confirmation_errors.append(f"EP{episode:03d} 缺少与当前草稿匹配的审核，请先完成审核")
+            continue
+        try:
+            review = read_artifact_version(project_dir, "review", episode, review_version)
+        except (KeyError, ValueError):
+            review = None
+        if not isinstance(review, dict):
+            confirmation_errors.append(f"EP{episode:03d} 审核产物不可读，请重建审核")
+        else:
+            if review.get("draft_hash") != draft_hash or item.get("review_draft_hash") not in (None, draft_hash):
+                confirmation_errors.append(f"EP{episode:03d} 审核不是当前草稿的审核，请重建审核")
+            if review.get("verdict") == "blocked":
+                confirmation_errors.append(f"EP{episode:03d} 审核仍为 blocked，请修复后重新审核")
+    if confirmation_errors:
+        raise ValueError("临时批次不能确认：\n" + "\n".join(f"- {item}" for item in confirmation_errors))
     batch["status"] = "confirmed"
     batch["confirmation_operator"] = operator.strip()
     batch["confirmation_ref"] = confirmation_ref.strip()
     batch["confirmed_at"] = now_iso()
     for item in (batch.get("records") or {}).values():
         item["batch_confirmation"] = "confirmed"
+        item["formal_continuity_status"] = "pending_episode_approval"
     return _write_batch(project_dir, batch)
 
 

@@ -19,9 +19,12 @@ description: |
 
 ## 一句话定位
 
-把小说原文变成可执行的单集创作契约，让 Writer 只执行当前契约，让 Reviewer
+把小说原文变成可执行的单集创作契约，让 Writer 只执行当前 execution brief，让 Reviewer
 和 Rewriter 看到与 Writer 完全相同的原文证据，让编剧确认的每一集成为后续
 集数的最高事实来源。类型差异通过按需加载的 Craft 模块实现，不改变已确认剧情。
+
+编剧通过自然语言提出需求、确认或修改；结构化 JSON、版本绑定和 CLI 调用由 Host Agent
+代办，不能把 JSON 格式要求转嫁给编剧。
 
 ## 核心流程
 
@@ -91,7 +94,7 @@ description: |
 | 启动临时批次 | `start-batch --start-episode N [--size 3]`；后续集可读未确认临时上下文，不能写入正式连续性 |
 | 批次状态与确认 | `batch-status`；编剧明确确认后 `confirm-batch --operator <实际确认人> --confirmation-ref <确认引用>` |
 | 快速草稿 | 同一上下文 → `save-draft --episode N --file <draft.txt> --workflow-mode quick_draft` |
-| 审核 | `review --episode N` → 读审核包 → `save-review --episode N --file <review.json>`（verdict 由系统按 issues 推导） |
+| 审核 | `review --episode N` → 读审核包 → `save-review --episode N --file <review.json>`（Host Agent 代办 JSON；系统综合 issues、beat/dimension/quote 检查和确定性门禁推导 verdict） |
 | 定向重写 | `rewrite --episode N` → 读重写包（含一次性 ticket）→ `save-draft --episode N --file <draft2.txt> --rewrite-ticket <ticket>` → 重新审核 |
 | 编剧定稿 | `approve --episode N --file <approved.txt>` |
 | 修改意见 | `apply-revision --episode N --instruction "..."` |
@@ -146,8 +149,10 @@ API 模式（实验性）：只有用户明确要求或项目配置明确启用�
   `degraded_episodes` 中显式列出；不允许把格式校验或本地裁决冒充系统模型审核。
 - 审核报告必须显式携带 `context_hash`、`draft_hash`、`draft_version`，缺任一拒绝保存，
   不允许自动补齐；草稿绑定生成它的上下文快照，重写只能消费审核报告实际绑定的草稿版本。
-- 审核 verdict 只由归一化后的有效 issues 推导（error→blocked / warning→warning / 其余→pass）；
-  模型输入的 verdict 只记录为 `model_verdict`；非法 issue（非对象/空 problem/非法 severity）拒绝整份报告。
+- 审核报告必须按 `review-report.schema.json` 提供逐 beat、八维度、逐 required quote 和
+  risk signal 检查；verdict 由归一化 issues 加这些检查和系统确定性门禁综合推导
+  （任一 error→blocked / 否则 warning→warning / 其余→pass）。模型输入的 verdict 只记录为
+  `model_verdict`；非法 issue（非对象/空 problem/非法 severity）拒绝整份报告。
 - 审核的 error 级问题必须有可在绑定 `episode_context` 中验证的结构化证据
   （`evidence_type: source|adaptation`）；任意字符串或不存在的事件/章节/span/quote
   引用拒绝保存，无证据 error 不自动降级；证据的所有字段必须指向同一个摘录。

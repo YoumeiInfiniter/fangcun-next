@@ -3,6 +3,15 @@
   "title": "Review Report",
   "type": "object",
   "required": ["episode", "verdict", "summary", "issues", "context_hash", "draft_hash", "draft_version"],
+  "oneOf": [
+    {
+      "required": ["review_contract_version", "beat_checks", "dimension_checks", "risk_signal_checks", "required_quote_checks"],
+      "properties": {"review_contract_version": {"enum": ["0.3.7"]}}
+    },
+    {
+      "properties": {"review_contract_version": {"enum": ["legacy_unspecified"]}}
+    }
+  ],
   "properties": {
     "episode": {"type": "integer", "minimum": 1},
     "context_hash": {"type": "string", "minLength": 32},
@@ -76,7 +85,7 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["beat_id", "status", "causality_complete", "dialogue_chain_complete", "visible_reaction_present", "required_visuals_present", "draft_evidence", "severity", "fix"],
+        "required": ["beat_id", "status", "causality_complete", "dialogue_chain_complete", "visible_reaction_present", "required_visuals_present", "severity", "fix"],
         "properties": {
           "beat_id": {"type": "string", "minLength": 1},
           "status": {"type": "string", "enum": ["dramatized", "summarized", "missing", "not_applicable"]},
@@ -85,7 +94,7 @@
           "visible_reaction_present": {"type": "boolean"},
           "required_visuals_present": {"type": "boolean"},
           "draft_evidence": {
-            "type": "object",
+            "type": ["object", "null"],
             "required": ["line_start", "line_end", "artifact_quote"],
             "properties": {
               "line_start": {"type": "integer", "minimum": 1},
@@ -99,8 +108,53 @@
         "additionalProperties": true
       }
     },
-    "dimension_checks": {"type": ["array", "object"]},
-    "risk_signal_checks": {"type": ["array", "object"]},
+    "dimension_checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["dimension", "status", "severity", "fix"],
+        "properties": {
+          "dimension": {"type": "string", "minLength": 1},
+          "status": {"type": "string", "enum": ["pass", "warning", "error", "not_applicable"]},
+          "severity": {"type": "string", "enum": ["error", "warning", "suggestion", "none"]},
+          "draft_evidence": {"type": ["object", "null"]},
+          "fix": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "risk_signal_checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["risk_id", "status", "assessment"],
+        "properties": {
+          "risk_id": {"type": "string", "minLength": 1},
+          "status": {"type": "string", "enum": ["confirmed", "rebutted", "not_applicable", "accepted"]},
+          "assessment": {"type": "string", "minLength": 1},
+          "fix": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "required_quote_checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["quote_id", "quote", "mode", "status", "severity", "draft_evidence", "fix"],
+        "properties": {
+          "quote_id": {"type": "string", "minLength": 1},
+          "quote": {"type": "string", "minLength": 1},
+          "mode": {"type": "string", "enum": ["exact", "semantic", "legacy_unspecified"]},
+          "status": {"type": "string", "enum": ["present", "exact_match", "semantic_match", "semantic_mismatch", "missing", "not_applicable"]},
+          "severity": {"type": "string", "enum": ["error", "warning", "suggestion", "none"]},
+          "draft_evidence": {"type": "object"},
+          "assessment": {"type": "string"},
+          "fix": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    },
     "context_hash": {"type": "string"},
     "reviewer": {"type": "string"}
   },

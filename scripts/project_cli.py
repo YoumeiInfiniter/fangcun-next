@@ -1190,6 +1190,11 @@ def _normalize_issue_evidence(issue: dict) -> None:
 
 def _validate_issue_evidence(issue: dict, context: dict) -> list[str]:
     """All provided evidence fields must resolve to ONE consistent excerpt."""
+    if issue.get("system_gate") is True:
+        # These issues are generated from deterministic draft/contract checks;
+        # their evidence is the validated beat, dimension or quote check, not
+        # a model-selected source excerpt.
+        return []
     if issue.get("severity") != "error":
         return []
     evidence = issue.get("evidence")
@@ -1529,11 +1534,9 @@ def _save_review(
                 "backfilled_by_system": True,
             },
         )
-    if draft_quality.get("hard_errors"):
-        raise CliError("绑定草稿存在确定性质量错误，拒绝保存审核：" + "; ".join(item.get("message", "") for item in draft_quality["hard_errors"]))
     draft_path = artifact_version_path(project_dir, "script_draft", episode, expected_draft_version)
     draft_text = draft_path.read_text(encoding="utf-8") if draft_path else ""
-    from .review_quality import validate_review_completeness
+    from .review_quality import derive_review_verdict, review_gate_issues, validate_review_completeness
 
     completeness_errors = validate_review_completeness(
         report_data,
@@ -1557,7 +1560,19 @@ def _save_review(
         and model_timing.get("estimated_seconds") != draft_metrics["estimated_seconds"]
     ):
         report_data["legacy_model_estimate"] = model_timing
-    report_data["verdict"] = _derive_verdict(report_data.get("issues"))
+    # A blocked deterministic gate is a real saved review result.  This keeps
+    # the report auditable and prevents a model from bypassing it by omitting
+    # a duplicate issue from ``issues``.
+    existing_gate_keys = {
+        str(item.get("system_gate_key"))
+        for item in (report_data.get("issues") or [])
+        if isinstance(item, dict) and item.get("system_gate_key")
+    }
+    for gate_issue in review_gate_issues(report_data, context, draft_text, draft_quality):
+        if gate_issue["system_gate_key"] not in existing_gate_keys:
+            report_data.setdefault("issues", []).append(gate_issue)
+            existing_gate_keys.add(gate_issue["system_gate_key"])
+    report_data["verdict"] = derive_review_verdict(report_data, context, draft_text, draft_quality)
     ensure_valid(report_data, "review-report.schema.json")
     for issue in report_data.get("issues", []) or []:
         evidence_errors = _validate_issue_evidence(issue, context)
@@ -1703,14 +1718,20 @@ def _normalize_review_report(data: dict) -> dict:
     return _normalize_review_report_v2(data)
 
 
-def _derive_verdict(issues: list[dict] | None) -> str:
-    """Verdict is ALWAYS derived from normalized effective issues."""
-    severities = [str(i.get("severity", "")).lower() for i in (issues or [])]
-    if "error" in severities:
-        return "blocked"
-    if "warning" in severities:
-        return "warning"
-    return "pass"
+def _derive_verdict(
+    issues: list[dict] | None,
+    *,
+    report: dict | None = None,
+    context: dict | None = None,
+    draft_text: str = "",
+    draft_quality: dict | None = None,
+) -> str:
+    """Derive from issues and, when available, all deterministic gate checks."""
+    from .review_quality import derive_review_verdict
+
+    effective_report = dict(report or {})
+    effective_report["issues"] = list(issues or [])
+    return derive_review_verdict(effective_report, context, draft_text, draft_quality)
 
 
 def _normalize_review_report_v2(data: dict) -> tuple[dict, list[str]]:
@@ -1747,23 +1768,27 @@ def _normalize_review_report_v2(data: dict) -> tuple[dict, list[str]]:
             "category": category,
             "problem": problem,
         }
-        for key in ("location", "source_evidence", "adaptation_basis", "fix", "evidence"):
+        for key in ("location", "source_evidence", "adaptation_basis", "fix", "evidence", "system_gate", "system_gate_key"):
             value = issue.get(key)
             if value not in (None, ""):
                 item[key] = value
         _normalize_issue_evidence(item)
-        if item["severity"] == "error" and item.get("evidence") is None:
+        if item["severity"] == "error" and item.get("evidence") is None and not item.get("system_gate"):
             errors.append(f"error 问题 {item['id']} 缺少 evidence")
             continue
         normalized.append(item)
     data["issues"] = normalized
-    for key in ("beat_checks", "dimension_checks", "risk_signal_checks", "review_contract_version"):
-        if key in data:
-            value = data.get(key)
-            if key == "review_contract_version" and value not in (None, ""):
-                data[key] = str(value)
-            else:
-                data[key] = value
+    check_fields = ("beat_checks", "dimension_checks", "risk_signal_checks", "required_quote_checks")
+    has_new_contract = bool(
+        str(data.get("review_contract_version") or "").strip()
+        or any(key in data for key in check_fields)
+    )
+    data["review_contract_version"] = str(
+        data.get("review_contract_version") or ("0.3.7" if has_new_contract else "legacy_unspecified")
+    )
+    for key in check_fields:
+        if key not in data or data.get(key) is None:
+            data[key] = []
     if model_verdict is not None:
         data["model_verdict"] = model_verdict
     data.pop("verdict", None)
@@ -1830,13 +1855,15 @@ def _validate_review_for_consumption(project_dir: Path, episode: int, review_dat
     except KeyError:
         errors.append("缺少绑定 draft_quality")
         draft_quality = None
+    draft_text = ""
     if draft_path:
-        from .review_quality import validate_review_completeness
+        draft_text = draft_path.read_text(encoding="utf-8")
+        from .review_quality import derive_review_verdict, validate_review_completeness
         errors.extend(
             validate_review_completeness(
                 review_data,
                 context,
-                draft_path.read_text(encoding="utf-8"),
+                draft_text,
                 draft_quality,
             )
         )
@@ -1844,7 +1871,8 @@ def _validate_review_for_consumption(project_dir: Path, episode: int, review_dat
         evidence_errors = _validate_issue_evidence(issue, context)
         if evidence_errors:
             errors.extend(f"issue {issue.get('id', '?')}: {e}" for e in evidence_errors)
-    derived = _derive_verdict(review_data.get("issues"))
+    from .review_quality import derive_review_verdict
+    derived = derive_review_verdict(review_data, context, draft_text, draft_quality)
     if review_data.get("verdict") != derived:
         errors.append(f"verdict {review_data.get('verdict')!r} 与 issues 推导结果 {derived!r} 不一致")
     issues = review_data.get("issues") or []

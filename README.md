@@ -19,7 +19,7 @@ Fangcun Next 是新版“小说转短剧剧本”Skill：以编剧为最终作�
 - 数据契约：`references/schemas/`（11 份 JSON Schema）；
 - 确定性运行时：原文归档与锚点检索、版本化容量取舍、单集执行 brief、草稿质量信号、逐 Beat 审核门禁、临时批次连续性、Prompt/Craft 路由、格式校验、连续性、修改请求、时长预估、迁移、发布包；
 - CLI：`python3 -m scripts.project_cli <command>`（或安装后 `fangcun`）；
-- 测试：`tests/unit/`（新版确定性模块）、`tests/regression/`（EP001 + 第四版公开案例）、`tests/smoke/`（多题材）。
+- 测试：`tests/unit/`（新版确定性模块）、`tests/regression/`（EP001 + 公开案例 + v0.3.7 隐藏变体回归）、`tests/smoke/`（多题材）。
 - 流程：Host Agent Mode 为默认正式路径；标准单集 Writer 1 + Reviewer 1，快速草稿
   `--workflow-mode quick_draft` 只有 Writer 1；API Mode 为显式实验性路径。
 - 飞书群聊交付：阶段验收产物落盘后默认输出 `FANGCUN_FEISHU_SYNC_EVENT`，由 Host Agent 使用一等 `feishu_doc` 工具创建版本化飞书文档、写入并读回校验、登记 registry 后回链并停止等待确认。
@@ -35,7 +35,9 @@ PYTHONPATH="$PWD" .venv/bin/python -m unittest discover -s tests/smoke -p 'test_
 PYTHONPATH="$PWD" .venv/bin/python -m scripts.project_cli build-package --out dist/fangcun-next-0.3.7.zip
 ```
 
-完整工作流示例见 `SKILL.md` 的命令路由表。改编指引、故事大纲、集纲均采用“同源输入绑定 → AI 审核 → 编剧确认”门禁；未确认阶段不能进入下游。
+完整工作流示例见 `SKILL.md` 的命令路由表。编剧只需用自然语言提出需求、确认或修改，Host Agent
+代办结构化 JSON/CLI；改编指引、故事大纲、集纲均采用“同源输入绑定 → AI 审核 → 编剧确认”门禁，
+单集 Reviewer 还必须逐 beat、逐维度、逐条 required quote 输出可保存检查；未确认或 stale 阶段不能进入下游。
 
 ## 安全
 

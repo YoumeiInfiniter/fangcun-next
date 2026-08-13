@@ -81,6 +81,7 @@ def _required_quotes(outline: dict) -> list[dict]:
         if mode not in ("exact", "semantic", "legacy_unspecified"):
             mode = "legacy_unspecified"
         quote = {
+            "quote_id": str(item.get("quote_id") or item.get("id") or f"required-quote-{len(quotes) + 1:03d}"),
             "quote": str(item["quote"]),
             "mode": mode,
             "source_event_id": item.get("source_event_id"),
@@ -94,6 +95,7 @@ def _required_quotes(outline: dict) -> list[dict]:
         if not any(q.get("quote") == item.get("quote") for q in quotes):
             quotes.append(
                 {
+                    "quote_id": str(item.get("quote_id") or item.get("id") or f"required-quote-{len(quotes) + 1:03d}"),
                     "quote": str(item["quote"]),
                     "mode": "legacy_unspecified",
                     "source_event_id": item.get("source_event_id"),

@@ -58,7 +58,10 @@
 刺激—回应—反应—结果；选择 Craft；对照原文台词；输出纯业务文本。Reviewer 与
 Rewriter 可读取同一快照中的完整 `episode_contract` 做核对。
 
-审核与重写：同源上下文；12 个维度；error 必须有证据；只修复明确问题；一次自动重写后交给编剧；不无限循环。
+审核与重写：同源上下文；Reviewer 输出逐 beat、八项核心维度、逐条 required quote 和 risk
+signal 检查；模型 issues 与结构化检查共同决定 verdict；error 必须有证据；只修复明确问题；
+一次自动重写后交给编剧；不无限循环。前集草稿变化导致后续临时记录 stale 时，Host Agent
+必须先提示重建并阻止继续获取后集上下文。
 
 编剧修改与后续承接：所有修改转 revision_request；定稿保存新版本、标记当前有效、重新提取事实、更新认知/关系/道具/地点/伏笔/钩子、生成未来 override；不静默重写过去集纲。
 

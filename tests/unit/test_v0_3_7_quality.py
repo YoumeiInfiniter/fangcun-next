@@ -120,6 +120,17 @@ class V037QualityTests(unittest.TestCase):
             "risk_signal_checks": [
                 {"risk_id": "os_ratio", "status": "confirmed", "assessment": "保留为合法表现"}
             ],
+            "required_quote_checks": [
+                {
+                    "quote_id": "required-quote-001",
+                    "quote": "必须原句。",
+                    "mode": "exact",
+                    "status": "exact_match",
+                    "severity": "none",
+                    "draft_evidence": {"line_start": 7, "line_end": 7, "artifact_quote": "必须原句。"},
+                    "fix": "",
+                }
+            ],
         }
         self.assertEqual(validate_review_completeness(report, context, draft, quality), [])
 

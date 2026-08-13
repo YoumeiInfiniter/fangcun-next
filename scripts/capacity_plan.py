@@ -295,14 +295,18 @@ def suggest_capacity_plans(
 generate_capacity_plan_options = suggest_capacity_plans
 
 
-def _normalize_event_partition(plan: dict) -> set[str]:
+def _event_partition_lists(plan: dict) -> list[str]:
     partition = plan.get("event_partition") or {}
-    ids: set[str] = set()
+    ids: list[str] = []
     if isinstance(partition, dict):
         for values in partition.values():
             if isinstance(values, list):
-                ids.update(str(value) for value in values)
+                ids.extend(str(value) for value in values)
     return ids
+
+
+def _normalize_event_partition(plan: dict) -> set[str]:
+    return set(_event_partition_lists(plan))
 
 
 def validate_capacity_plan(
@@ -337,14 +341,46 @@ def validate_capacity_plan(
         outline = _outline_binding(project_dir)
         if plan.get("outline_hash") and outline["hash"] and plan.get("outline_hash") != outline["hash"]:
             errors.append("capacity_plan 的 outline_hash 与当前集纲不一致")
-    assigned = _normalize_event_partition(plan)
-    listed = set(str(x) for key in ("compressible_event_ids", "deferred_event_ids", "omitted_event_ids") for x in (plan.get(key) or []))
+    assigned_list = _event_partition_lists(plan)
+    assigned = set(assigned_list)
+    kept_list = [str(x) for x in (plan.get("kept_event_ids") or [])]
+    compressible_list = [str(x) for x in (plan.get("compressible_event_ids") or [])]
+    deferred_list = [str(x) for x in (plan.get("deferred_event_ids") or [])]
+    omitted_list = [str(x) for x in (plan.get("omitted_event_ids") or [])]
+    listed_list = compressible_list + deferred_list + omitted_list
+    listed = set(listed_list)
+    if len(assigned_list) != len(assigned):
+        errors.append("event_partition 不能重复分配同一事件")
+    if len(kept_list) != len(set(kept_list)):
+        errors.append("kept_event_ids 不能重复")
+    if len(listed_list) != len(listed):
+        errors.append("compressible/deferred/omitted 清单不能重复")
+    if kept_list != assigned_list:
+        errors.append("kept_event_ids 必须与 event_partition 按顺序完全一致")
+    if plan.get("compressed_event_ids") is not None:
+        compressed_alias = [str(x) for x in (plan.get("compressed_event_ids") or [])]
+        if compressed_alias != compressible_list:
+            errors.append("compressed_event_ids 必须与 compressible_event_ids 完全一致")
     if assigned & listed:
         errors.append("同一事件不能同时出现在 event_partition 与压缩/延期/省略清单")
     if known_ids:
         unknown = sorted((assigned | listed) - known_ids)
         if unknown:
             errors.append("capacity_plan 引用了不存在的事件：" + ", ".join(unknown[:10]))
+        covered = assigned | listed
+        missing = sorted(known_ids - covered)
+        if missing:
+            errors.append("capacity_plan 未覆盖当前源事件：" + ", ".join(missing[:10]))
+        if plan.get("coverage_mode") == "full" and omitted:
+            errors.append("coverage_mode=full 不能省略事件")
+    action = plan.get("overflow_action")
+    accepted = [int(x) for x in (plan.get("accepted_overflow_episodes") or []) if isinstance(x, int) and not isinstance(x, bool)]
+    if action == "accept_overflow" and not accepted:
+        errors.append("overflow_action=accept_overflow 必须列出 accepted_overflow_episodes")
+    if action != "accept_overflow" and accepted:
+        errors.append("只有 overflow_action=accept_overflow 才能填写 accepted_overflow_episodes")
+    if action in ("full", "accept_overflow") and (compressible_list or deferred_list or omitted_list):
+        errors.append(f"overflow_action={action} 时不应同时填写压缩/延期/省略清单")
     return list(dict.fromkeys(errors))
 
 

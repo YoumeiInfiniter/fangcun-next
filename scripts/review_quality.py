@@ -1,4 +1,10 @@
-"""Completeness checks for v0.3.7 semantic review reports."""
+"""Deterministic completeness and gate checks for v0.3.7 review reports.
+
+The model supplies the semantic judgement, but the runtime owns the report
+shape, coverage accounting and the final verdict.  In particular, a report
+cannot turn a failed beat/dimension/required quote into ``pass`` merely by
+leaving ``issues`` empty.
+"""
 
 from __future__ import annotations
 
@@ -18,6 +24,15 @@ CORE_DIMENSIONS = (
 )
 BEAT_STATUSES = {"dramatized", "summarized", "missing", "not_applicable"}
 SEVERITIES = {"error", "warning", "suggestion", "none"}
+QUOTE_MODES = {"exact", "semantic", "legacy_unspecified"}
+QUOTE_STATUSES = {
+    "present",
+    "exact_match",
+    "semantic_match",
+    "semantic_mismatch",
+    "missing",
+    "not_applicable",
+}
 
 
 def core_beats_for_context(context: dict) -> list[dict]:
@@ -41,6 +56,50 @@ def core_beats_for_context(context: dict) -> list[dict]:
         seen.add(beat_id)
         beats.append({"beat_id": beat_id, "source": "beat_plan", **item})
     return beats
+
+
+def required_quotes_for_context(context: dict) -> list[dict]:
+    """Return stable quote obligations, including legacy dialogue anchors."""
+    outline = context.get("episode_outline") or {}
+    brief = context.get("episode_execution_brief") or {}
+    raw_quotes = brief.get("required_quotes")
+    if not isinstance(raw_quotes, list):
+        raw_quotes = outline.get("required_quotes", []) or []
+    quotes: list[dict] = []
+    seen_ids: set[str] = set()
+    seen_texts: set[str] = set()
+
+    def add(item: dict, *, default_mode: str = "legacy_unspecified") -> None:
+        quote = str(item.get("quote") or "").strip()
+        if not quote:
+            return
+        mode = str(item.get("mode") or item.get("quote_mode") or default_mode)
+        if mode not in QUOTE_MODES:
+            mode = "legacy_unspecified"
+        quote_id = str(item.get("quote_id") or item.get("id") or f"required-quote-{len(quotes) + 1:03d}")
+        if quote_id in seen_ids:
+            quote_id = f"required-quote-{len(quotes) + 1:03d}"
+        if quote_id in seen_ids or quote in seen_texts:
+            return
+        seen_ids.add(quote_id)
+        seen_texts.add(quote)
+        quotes.append(
+            {
+                "quote_id": quote_id,
+                "quote": quote,
+                "mode": mode,
+                **({"source_event_id": item.get("source_event_id")} if item.get("source_event_id") else {}),
+                **({"pair_id": item.get("pair_id")} if item.get("pair_id") else {}),
+            }
+        )
+
+    for item in raw_quotes:
+        if isinstance(item, dict):
+            add(item)
+    for item in outline.get("dialogue_anchors", []) or []:
+        if isinstance(item, dict) and item.get("type") == "quote":
+            add(item)
+    return quotes
 
 
 def system_risk_ids(draft_quality: dict | None) -> list[str]:
@@ -96,15 +155,64 @@ def _beat_error(item: dict, *, required_visuals_expected: bool = True) -> str | 
 def _dimension_entries(report: dict) -> list[dict]:
     entries = report.get("dimension_checks")
     if isinstance(entries, dict):
-        return [{"dimension": key, **(value if isinstance(value, dict) else {"status": value})} for key, value in entries.items()]
+        return [
+            {"dimension": key, **(value if isinstance(value, dict) else {"status": value})}
+            for key, value in entries.items()
+        ]
     return [item for item in (entries or []) if isinstance(item, dict)]
 
 
 def _risk_entries(report: dict) -> list[dict]:
     entries = report.get("risk_signal_checks")
     if isinstance(entries, dict):
-        return [{"risk_id": key, **(value if isinstance(value, dict) else {"status": value})} for key, value in entries.items()]
+        return [
+            {"risk_id": key, **(value if isinstance(value, dict) else {"status": value})}
+            for key, value in entries.items()
+        ]
     return [item for item in (entries or []) if isinstance(item, dict)]
+
+
+def _quote_entries(report: dict) -> list[dict]:
+    entries = report.get("required_quote_checks")
+    if isinstance(entries, dict):
+        return [
+            {"quote_id": key, **(value if isinstance(value, dict) else {"status": value})}
+            for key, value in entries.items()
+        ]
+    return [item for item in (entries or []) if isinstance(item, dict)]
+
+
+def _quote_key(item: dict) -> str:
+    return str(item.get("quote_id") or item.get("id") or "")
+
+
+def _quote_error(item: dict, expected: dict, draft_text: str) -> str | None:
+    quote_id = _quote_key(item)
+    if not quote_id:
+        return "缺少 quote_id"
+    if item.get("mode") not in QUOTE_MODES:
+        return f"quote {quote_id} mode 非法"
+    if item.get("mode") != expected.get("mode"):
+        return f"quote {quote_id} mode 与上下文不一致"
+    if str(item.get("quote") or "").strip() != str(expected.get("quote") or "").strip():
+        return f"quote {quote_id} 文本与上下文不一致"
+    if item.get("status") not in QUOTE_STATUSES:
+        return f"quote {quote_id} status 非法"
+    if item.get("severity") not in SEVERITIES:
+        return f"quote {quote_id} severity 非法"
+    if not isinstance(item.get("fix", ""), str):
+        return f"quote {quote_id} fix 必须是字符串"
+    mode = expected.get("mode")
+    evidence_required = mode == "semantic" or item.get("status") in {
+        "present",
+        "exact_match",
+        "semantic_match",
+        "semantic_mismatch",
+    }
+    evidence_error = _evidence_error(item.get("draft_evidence"), draft_text, required=evidence_required)
+    if evidence_error:
+        return f"quote {quote_id}: {evidence_error}"
+    return None
 
 
 def validate_review_completeness(
@@ -113,14 +221,14 @@ def validate_review_completeness(
     draft_text: str,
     draft_quality: dict | None = None,
 ) -> list[str]:
-    """Validate semantic coverage without deciding whether writing is good."""
+    """Validate report structure and exact coverage, without judging quality."""
     errors: list[str] = []
     beats = core_beats_for_context(context)
-    strict = bool(beats) or any(
-        (item.get("mode") or item.get("quote_mode")) in ("exact", "semantic")
-        for item in ((context.get("episode_outline") or {}).get("required_quotes", []) or [])
-        if isinstance(item, dict)
-    )
+    expected_quotes = required_quotes_for_context(context)
+    contract_version = str(report.get("review_contract_version") or "")
+    strict = bool(beats) or any(item.get("mode") in ("exact", "semantic") for item in expected_quotes)
+    strict = strict or contract_version == "0.3.7"
+
     beat_entries = report.get("beat_checks")
     if isinstance(beat_entries, dict):
         beat_entries = [{"beat_id": key, **(value if isinstance(value, dict) else {})} for key, value in beat_entries.items()]
@@ -149,7 +257,14 @@ def validate_review_completeness(
             beat_error = _beat_error(item, required_visuals_expected=expected_visuals)
             if beat_error:
                 errors.append(f"beat {item.get('beat_id')}: {beat_error}")
-            evidence_error = _evidence_error(item.get("draft_evidence"), draft_text)
+            # A missing core beat may have no matching excerpt.  Its status is
+            # itself the blocking evidence; a supplied excerpt is still
+            # checked deterministically.
+            evidence_error = _evidence_error(
+                item.get("draft_evidence"),
+                draft_text,
+                required=item.get("status") not in {"missing", "not_applicable"},
+            )
             if evidence_error:
                 errors.append(f"beat {item.get('beat_id')}: {evidence_error}")
     elif beat_entries:
@@ -182,6 +297,28 @@ def validate_review_completeness(
                 if evidence_error:
                     errors.append(f"维度 {item.get('dimension')}: {evidence_error}")
 
+    quotes = _quote_entries(report)
+    expected_quote_ids = [str(item["quote_id"]) for item in expected_quotes]
+    actual_quote_ids = [_quote_key(item) for item in quotes]
+    if strict:
+        missing_quotes = [item for item in expected_quote_ids if actual_quote_ids.count(item) == 0]
+        duplicate_quotes = [item for item in expected_quote_ids if actual_quote_ids.count(item) > 1]
+        unknown_quotes = [item for item in actual_quote_ids if item not in expected_quote_ids]
+        if missing_quotes:
+            errors.append("缺少 required quote 检查：" + ", ".join(missing_quotes))
+        if duplicate_quotes:
+            errors.append("required quote 重复检查：" + ", ".join(duplicate_quotes))
+        if unknown_quotes:
+            errors.append("审核报告包含未知 required quote：" + ", ".join(unknown_quotes))
+        for item in quotes:
+            quote_id = _quote_key(item)
+            if quote_id not in expected_quote_ids:
+                continue
+            expected = next(quote for quote in expected_quotes if quote["quote_id"] == quote_id)
+            quote_error = _quote_error(item, expected, draft_text)
+            if quote_error:
+                errors.append(quote_error)
+
     expected_risks = system_risk_ids(draft_quality)
     risk_entries = _risk_entries(report)
     risk_ids = [str(item.get("risk_id") or item.get("signal_id")) for item in risk_entries]
@@ -204,6 +341,163 @@ def validate_review_completeness(
             if not str(item.get("assessment") or item.get("note") or "").strip():
                 errors.append(f"risk signal {risk_id} 缺少 assessment")
     return list(dict.fromkeys(errors))
+
+
+def _gate_issue(
+    issue_id: str,
+    severity: str,
+    category: str,
+    problem: str,
+    fix: str = "",
+) -> dict:
+    return {
+        "id": issue_id,
+        "severity": severity,
+        "category": category,
+        "problem": problem,
+        "fix": fix,
+        "system_gate": True,
+        "system_gate_key": issue_id,
+    }
+
+
+def review_gate_issues(
+    report: dict,
+    context: dict | None = None,
+    draft_text: str = "",
+    draft_quality: dict | None = None,
+) -> list[dict]:
+    """Synthesize deterministic issues from semantic checks and hard signals."""
+    context = context or {}
+    generated: list[dict] = []
+    beats = core_beats_for_context(context)
+    beat_entries = report.get("beat_checks")
+    if isinstance(beat_entries, dict):
+        beat_entries = [{"beat_id": key, **(value if isinstance(value, dict) else {})} for key, value in beat_entries.items()]
+    beat_by_id = {str(item.get("beat_id")): item for item in (beat_entries or []) if isinstance(item, dict)}
+    for expected in beats:
+        beat_id = str(expected["beat_id"])
+        item = beat_by_id.get(beat_id)
+        if not item:
+            continue  # structural completeness reports this separately
+        required_visuals_expected = bool(
+            expected.get("required_visual_beats")
+            or expected.get("required_visuals")
+            or expected.get("visual_beats")
+        )
+        failed_checks = [
+            item.get(key) is False
+            for key in ("causality_complete", "dialogue_chain_complete", "visible_reaction_present")
+        ]
+        if required_visuals_expected:
+            failed_checks.append(item.get("required_visuals_present") is False)
+        failed = (
+            item.get("status") in {"summarized", "missing", "not_applicable"}
+            or any(failed_checks)
+            or item.get("severity") == "error"
+        )
+        if failed:
+            generated.append(
+                _gate_issue(
+                    f"BEAT-{beat_id}",
+                    "error",
+                    "outline_adherence" if item.get("status") in {"summarized", "missing", "not_applicable"} else "shootability",
+                    f"核心 beat {beat_id} 未被完整落实：status={item.get('status')!r}，逐项检查存在失败或 error 标记。",
+                    str(item.get("fix") or "补齐该 beat 的因果、对白连接、可见反应和必需画面。"),
+                )
+            )
+
+    for item in _dimension_entries(report):
+        dimension = str(item.get("dimension") or "")
+        if dimension not in CORE_DIMENSIONS:
+            continue
+        status = item.get("status")
+        severity = item.get("severity")
+        if status == "error" or severity == "error":
+            generated.append(
+                _gate_issue(
+                    f"DIMENSION-{dimension}",
+                    "error",
+                    dimension if dimension in {
+                        "source_fidelity", "character_knowledge", "dialogue_pairing", "continuity", "shootability", "ending_hook", "previous_episode_bridge"
+                    } else "other",
+                    f"审核维度 {dimension} 标记为 error，不能由空 issues 覆盖。",
+                    str(item.get("fix") or "按该维度的 draft_evidence 修复后重新审核。"),
+                )
+            )
+        elif status == "warning" or severity == "warning":
+            generated.append(
+                _gate_issue(
+                    f"DIMENSION-{dimension}",
+                    "warning",
+                    dimension if dimension in {
+                        "source_fidelity", "character_knowledge", "dialogue_pairing", "continuity", "shootability", "ending_hook", "previous_episode_bridge"
+                    } else "other",
+                    f"审核维度 {dimension} 存在 warning，需要编剧判断。",
+                    str(item.get("fix") or "由编剧决定是否调整。"),
+                )
+            )
+
+    expected_quotes = required_quotes_for_context(context)
+    quote_by_id = {_quote_key(item): item for item in _quote_entries(report)}
+    for expected in expected_quotes:
+        quote_id = str(expected["quote_id"])
+        item = quote_by_id.get(quote_id)
+        if not item:
+            continue
+        mode = expected.get("mode")
+        status = item.get("status")
+        failed = False
+        severity = "error"
+        if mode == "exact":
+            failed = _norm(expected.get("quote", "")) not in _norm(draft_text) or status not in {"present", "exact_match"}
+        elif mode == "semantic":
+            failed = status in {"missing", "semantic_mismatch", "not_applicable"} or item.get("severity") == "error"
+        else:
+            failed = status in {"missing", "not_applicable"} or item.get("severity") == "error"
+            severity = "warning" if item.get("severity") != "error" else "error"
+        if failed:
+            generated.append(
+                _gate_issue(
+                    f"QUOTE-{quote_id}",
+                    severity,
+                    "dialogue_pairing",
+                    f"required quote {quote_id}（{mode}）未满足：status={status!r}。",
+                    str(item.get("fix") or "按上下文逐条恢复或明确处理该台词义务。"),
+                )
+            )
+
+    for item in (draft_quality or {}).get("hard_errors", []) or []:
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("code") or "hard_error")
+        generated.append(
+            _gate_issue(
+                f"SYSTEM-{code}",
+                "error",
+                "format" if "format" in code else "other",
+                str(item.get("message") or f"确定性质量门禁 {code} 未通过。"),
+                "先修复确定性质量错误，再重新审核草稿。",
+            )
+        )
+    return generated
+
+
+def derive_review_verdict(
+    report: dict,
+    context: dict | None = None,
+    draft_text: str = "",
+    draft_quality: dict | None = None,
+) -> str:
+    """Derive verdict from model issues plus deterministic gate issues."""
+    issues = [item for item in (report.get("issues") or []) if isinstance(item, dict)]
+    effective = issues + review_gate_issues(report, context, draft_text, draft_quality)
+    severities = [str(item.get("severity", "")).lower() for item in effective]
+    if "error" in severities:
+        return "blocked"
+    if "warning" in severities:
+        return "warning"
+    return "pass"
 
 
 validate_review_report_completeness = validate_review_completeness

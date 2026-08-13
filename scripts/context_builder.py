@@ -224,6 +224,15 @@ def build_episode_context(
             )
 
     provisional = provisional_batch_context(project_dir, episode)
+    if provisional and provisional.get("invalidated_previous_episodes"):
+        stale = provisional["invalidated_previous_episodes"]
+        labels = ", ".join(f"EP{int(item.get('episode', 0)):03d}" for item in stale)
+        raise ContextIncompleteError(
+            [
+                f"当前要继续 EP{episode:03d}，但同批前集 {labels} 仍为 stale/unusable；"
+                "请先重新生成并审核这些前集，再重新获取当前集上下文。"
+            ]
+        )
     execution_brief = build_episode_execution_brief(
         outline,
         evidence,
