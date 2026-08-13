@@ -371,7 +371,7 @@ def validate_capacity_plan(
         missing = sorted(known_ids - covered)
         if missing:
             errors.append("capacity_plan 未覆盖当前源事件：" + ", ".join(missing[:10]))
-        if plan.get("coverage_mode") == "full" and omitted:
+        if plan.get("coverage_mode") == "full" and omitted_list:
             errors.append("coverage_mode=full 不能省略事件")
     action = plan.get("overflow_action")
     accepted = [int(x) for x in (plan.get("accepted_overflow_episodes") or []) if isinstance(x, int) and not isinstance(x, bool)]

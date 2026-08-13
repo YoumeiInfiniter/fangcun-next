@@ -4,7 +4,7 @@
 
 - 分支：`codex/fangcun-next-v0.3.7-quality-stabilization`
 - 起始基线：`188d851 test: align v0.3.6 regression fixtures with semantic coverage guard`
-- 当前状态：候选实现已完成本轮 P0 修复与开发自测，等待独立 Reviewer 复审；未合并 `main`、未推送远程。
+- 当前状态：已完成 08e41a6 后的正式发布阻断修复与开发自测，候选包已重建并通过干净 editable 安装验证，等待独立 Reviewer 复审；未合并 `main`、未推送远程。
 - 两份启动合同文档保持原样：`0.3.7-fix-prompt.md`、`quality-gates-v0.3.7-design.md`。
 
 ## 已实施
@@ -33,18 +33,27 @@
 9. semantic quote 现在有逐条 `required_quote_checks` 和草稿行证据；前集草稿变更会让
    后续临时记录 stale，确认批次或继续获取后集上下文都会给出“先重建并审核”的阻断提示。
    capacity_plan 增加最小源事件覆盖、重复/遗漏/未知事件和取舍 action 一致性校验。
+10. 修复 release-blocker：`validate_capacity_plan` 在 `coverage_mode=full` 时使用已规范化的
+    `omitted_list`，完整保留事件并 `accept_overflow` 可正常 validate/save；存在省略事件时返回
+    `coverage_mode=full 不能省略事件`，不再抛出 `NameError`。新增 unit/regression 直接回归，且验证
+    mainline/balanced 兼容路径。
 
 ## 自测证据
 
 使用 `/tmp/fangcun-next-v037-venv`（Python 3.12.13，`requests` 2.34.2）执行：
 
-- unit：154 项，`OK`；
-- regression：169 项，`OK`（含 4 项独立 v0.3.7 隐藏变体回归）；
+- unit：155 项，`OK`；
+- regression：170 项，`OK`（含 5 项独立 v0.3.7 隐藏变体回归）；
 - smoke：4 项，`OK`；
 - `compileall`：通过；
+- 全部 14 份 JSON Schema 文件可解析，`git diff --check` 通过；
 - 候选包：`/private/tmp/fangcun-next-0.3.7-candidate.zip`，本轮提交后重建，版本
-  `0.3.7`；已验证新增模块可从候选包导入，且不含 `tests/`、`docs/`、
+  `0.3.7`，SHA-256 为 `3d9d0d9fb7110b79f704e3ac377217db4457d59e39673e437f9335b048792625`；已验证新增模块可从候选包导入，且不含 `tests/`、`docs/`、
   `projects/`、`memory/`、`tools/` 等私有目录。
+- 正式安装形态：从候选 ZIP 解压到 `/private/tmp/fangcun-next-formal-4sBhmL/fangcun-next-0.3.7`，使用
+  Python 3.12.13 新建 `/private/tmp/fangcun-next-formal-4sBhmL/venv` 并对解压根目录执行
+  editable install；未设置 `FANGCUN_SKILL_ROOT`、未建立 `references` symlink，`fangcun --version`、
+  `fangcun init`、Schema 加载及 `references/prompts/reviewer.md` 读取均通过。
 - 起始提交 `188d851` 的只读基线（解包到临时 `/tmp`，未改当前工作树）：unit
   148、regression 165、smoke 4，均 `OK`。
 

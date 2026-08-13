@@ -14,7 +14,7 @@ from scripts.batch_context import (
     record_provisional_review,
     start_provisional_batch,
 )
-from scripts.capacity_plan import suggest_capacity_plans, validate_capacity_plan
+from scripts.capacity_plan import save_capacity_plan, suggest_capacity_plans, validate_capacity_plan
 from scripts.common import sha256_text
 from scripts.review_quality import CORE_DIMENSIONS, derive_review_verdict, validate_review_completeness
 from scripts.state_store import commit_artifact, init_project
@@ -151,6 +151,28 @@ class V037HiddenVariantRegressions(unittest.TestCase):
         unknown = copy.deepcopy(base)
         unknown.setdefault("deferred_event_ids", []).append("UNKNOWN")
         self.assertTrue(any("不存在" in error for error in validate_capacity_plan(unknown, project)))
+
+    def test_full_accept_overflow_is_a_valid_natural_capacity_choice(self):
+        project = self._capacity_project()
+        proposal = suggest_capacity_plans(project)
+        options = {item["option_id"]: item for item in proposal["options"]}
+        full = dict(options["accept_duration_overflow"])
+        full.update(
+            {
+                "plan_schema_version": "0.3.7",
+                "forecast_version": proposal["forecast_version"],
+                "forecast_hash": proposal["forecast_hash"],
+                "status": "approved",
+            }
+        )
+        self.assertEqual(validate_capacity_plan(full, project), [])
+        saved = save_capacity_plan(project, full, operator="writer", confirmation_ref="natural-full-overflow")
+        self.assertEqual(saved["version"], "v001")
+
+        omitted = copy.deepcopy(full)
+        omitted["omitted_event_ids"] = ["E1"]
+        errors = validate_capacity_plan(omitted, project)
+        self.assertIn("coverage_mode=full 不能省略事件", errors)
 
     @staticmethod
     def _record_artifact(project: Path, kind: str, episode: int, text: str, *, draft_hash: str | None = None) -> dict:

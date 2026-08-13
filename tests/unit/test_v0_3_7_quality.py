@@ -11,7 +11,7 @@ from scripts.batch_context import (
     start_provisional_batch,
     provisional_batch_context,
 )
-from scripts.capacity_plan import save_capacity_plan, suggest_capacity_plans
+from scripts.capacity_plan import save_capacity_plan, suggest_capacity_plans, validate_capacity_plan
 from scripts.common import sha256_text
 from scripts.draft_quality import compute_draft_quality
 from scripts.execution_brief import build_episode_execution_brief, verify_execution_brief
@@ -175,6 +175,74 @@ class V037QualityTests(unittest.TestCase):
             self.assertEqual(result["version"], "v001")
             active = resolve_active(project, "capacity_plan")
             self.assertEqual(active["record"]["status"], "approved")
+
+    def test_capacity_plan_full_accept_overflow_and_legacy_modes(self):
+        with tempfile.TemporaryDirectory() as raw:
+            project = Path(raw) / "project"
+            init_project(
+                project,
+                {
+                    "project_id": "full-plan-test",
+                    "initial_episode_count": 2,
+                    "preferred_episode_seconds": [85, 95],
+                },
+            )
+            commit_artifact(
+                project,
+                "source_events",
+                content=[
+                    {"event_id": "E1", "importance": "mainline", "preferred_screen_seconds": 90},
+                    {"event_id": "E2", "importance": "subline", "preferred_screen_seconds": 90},
+                ],
+                status="approved",
+                source="test",
+            )
+            commit_artifact(
+                project,
+                "capacity_forecast",
+                content={
+                    "requested": {"episodes": 2, "preferred_episode_seconds": [85, 95]},
+                    "forecast": {"full_adaptation_seconds": [160, 180]},
+                    "pressure": "high",
+                    "advisory_only": True,
+                },
+                status="approved",
+                source="test",
+            )
+            commit_artifact(
+                project,
+                "episode_outline",
+                content={"episodes": [{"episode": 1}]},
+                status="approved",
+                source="test",
+            )
+            proposal = suggest_capacity_plans(project)
+            options = {item["option_id"]: item for item in proposal["options"]}
+
+            def bound(option):
+                result = dict(option)
+                result.update(
+                    {
+                        "plan_schema_version": "0.3.7",
+                        "forecast_version": proposal["forecast_version"],
+                        "forecast_hash": proposal["forecast_hash"],
+                        "status": "approved",
+                    }
+                )
+                return result
+
+            full = bound(options["accept_duration_overflow"])
+            self.assertEqual(validate_capacity_plan(full, project), [])
+            saved = save_capacity_plan(project, full, operator="writer", confirmation_ref="full-plan")
+            self.assertEqual(saved["version"], "v001")
+
+            omitted = dict(full)
+            omitted["omitted_event_ids"] = ["E1"]
+            errors = validate_capacity_plan(omitted, project)
+            self.assertIn("coverage_mode=full 不能省略事件", errors)
+
+            for option_id in ("quality_first_mainline", "fixed_count_explicit_overflow"):
+                self.assertEqual(validate_capacity_plan(bound(options[option_id]), project), [])
 
     def test_provisional_context_invalidates_later_records_when_prior_draft_changes(self):
         with tempfile.TemporaryDirectory() as raw:
